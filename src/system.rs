@@ -1,13 +1,25 @@
+//! System metrics collection with per-sensor hardware/simulation fallback.
+//!
+//! [`SystemReader`] probes the host at construction time to discover which
+//! sensors are available (CPU, temperature, battery, fan, network). For each
+//! missing sensor, [`SimState`] generates plausible simulated values so the
+//! app works identically on any platform.
+
 use battery::Manager as BatteryManager;
 use sysinfo::{Components, Networks, System};
 use std::time::Instant;
 
+/// A single network interface with its name and IPv4 address.
 #[derive(Debug, Clone)]
 pub struct NetworkInterface {
     pub name: String,
     pub ip: String,
 }
 
+/// A snapshot of all system metrics at a point in time.
+///
+/// Each metric has a corresponding `*_real` flag indicating whether the value
+/// came from actual hardware or from the simulator.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct SystemInfo {
@@ -29,14 +41,17 @@ pub struct SystemInfo {
 }
 
 impl SystemInfo {
+    /// Converts `ram_used_bytes` to gigabytes.
     pub fn ram_used_gb(&self) -> f64 {
         self.ram_used_bytes as f64 / 1_073_741_824.0
     }
 
+    /// Converts `ram_total_bytes` to gigabytes.
     pub fn ram_total_gb(&self) -> f64 {
         self.ram_total_bytes as f64 / 1_073_741_824.0
     }
 
+    /// Formats `uptime_secs` as a human-readable string (e.g. "2h 34m").
     pub fn uptime_formatted(&self) -> String {
         let days = self.uptime_secs / 86400;
         let hours = (self.uptime_secs % 86400) / 3600;
@@ -51,6 +66,10 @@ impl SystemInfo {
     }
 }
 
+/// Simulated sensor values for platforms missing real hardware.
+///
+/// Produces smoothly oscillating CPU, temperature, RAM, and battery values
+/// that look natural in the UI.
 struct SimState {
     cpu_phase: f64,
     temp_current: f32,
@@ -70,18 +89,19 @@ impl SimState {
         }
     }
 
+    /// Advances all simulated sensors by `dt_secs`.
     fn tick(&mut self, dt_secs: f64) {
         self.cpu_phase += dt_secs * 0.3;
-        let base = 47.5 + 37.5 * (self.cpu_phase.sin());
-        let noise = (rand::random::<f64>() - 0.5) * 10.0;
-        let _cpu = (base + noise).clamp(10.0, 85.0);
 
-        let target_temp = 40.0 + (_cpu as f32 / 85.0) * 35.0;
+        // Temperature tracks a synthetic CPU load curve
+        let synthetic_cpu = (47.5 + 37.5 * self.cpu_phase.sin()).clamp(10.0, 85.0);
+        let target_temp = 40.0 + (synthetic_cpu as f32 / 85.0) * 35.0;
         self.temp_current += (target_temp - self.temp_current) * 0.05;
 
         self.ram_current += (rand::random::<f64>() - 0.5) * 0.1;
         self.ram_current = self.ram_current.clamp(2.0, 6.0);
 
+        // Battery drains slowly then recharges, cycling endlessly
         if self.battery_charging {
             self.battery_percent += 0.02;
             if self.battery_percent >= 100.0 {
@@ -97,18 +117,17 @@ impl SimState {
         }
     }
 
-    #[allow(dead_code)]
-    fn cpu(&self) -> f32 {
-        let base = 47.5 + 37.5 * (self.cpu_phase.sin());
-        (base as f32).clamp(10.0, 85.0)
-    }
-
+    /// Derives a simulated fan RPM from the current temperature.
     fn fan_rpm(&self) -> u32 {
         let ratio = ((self.temp_current - 40.0) / 35.0).clamp(0.0, 1.0);
         1200 + (ratio * 3300.0) as u32
     }
 }
 
+/// Reads system metrics, mixing real hardware sensors with simulated fallbacks.
+///
+/// This struct is `!Send` because the `battery` crate uses `Rc` internally,
+/// so it must live on a dedicated OS thread rather than a tokio task.
 pub struct SystemReader {
     sys: System,
     components: Components,
@@ -124,6 +143,7 @@ pub struct SystemReader {
 }
 
 impl SystemReader {
+    /// Probes the system for available sensors and initializes fallback state.
     pub fn new() -> Self {
         let mut sys = System::new();
         sys.refresh_cpu_usage();
@@ -151,6 +171,7 @@ impl SystemReader {
         }
     }
 
+    /// Returns a human-readable summary of which sensors are real vs simulated.
     pub fn sensor_status_message(&self) -> String {
         format!(
             "[system] sensors: cpu=real, temp={}, ram=real, battery={}, fan={}, network={}",
@@ -161,6 +182,7 @@ impl SystemReader {
         )
     }
 
+    /// Reads all system metrics, returning a complete [`SystemInfo`] snapshot.
     pub fn read(&mut self) -> SystemInfo {
         let now = Instant::now();
         let dt = now.duration_since(self.last_tick).as_secs_f64();
@@ -216,6 +238,7 @@ impl SystemReader {
         }
     }
 
+    /// Reads battery percentage and power state from the real battery manager.
     fn read_real_battery(&self) -> (f32, String) {
         let mgr = match &self.battery_mgr {
             Some(m) => m,
@@ -235,6 +258,10 @@ impl SystemReader {
         }
     }
 
+    /// Enumerates real network interfaces with their IPv4 addresses.
+    ///
+    /// On Linux, uses `ip --brief addr show` for accurate results.
+    /// Falls back to a fake wlan0 interface if none are found.
     fn read_real_networks(&mut self) -> Vec<NetworkInterface> {
         self.networks.refresh(false);
         let mut result: Vec<NetworkInterface> = Vec::new();
@@ -276,6 +303,7 @@ impl SystemReader {
         result
     }
 
+    /// Reads fan speed from `/sys/class/hwmon` (Linux only).
     #[cfg(target_os = "linux")]
     fn probe_fan_speed() -> Option<u32> {
         use std::fs;
@@ -299,6 +327,7 @@ impl SystemReader {
         None
     }
 
+    /// Fan speed is not available on non-Linux platforms.
     #[cfg(not(target_os = "linux"))]
     fn probe_fan_speed() -> Option<u32> {
         None

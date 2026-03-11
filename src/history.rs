@@ -1,17 +1,28 @@
+//! Persistent conversation history stored as JSON Lines (JSONL).
+//!
+//! [`HistoryManager`] maintains an in-memory buffer of recent messages and
+//! persists them to a JSONL file on every append. Old entries are trimmed
+//! when the buffer exceeds `max_entries`.
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+/// Who produced a message in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// The AI consciousness.
     Ai,
+    /// The human user.
     User,
+    /// System-generated messages (errors, status, etc.).
     System,
 }
 
+/// A single timestamped message in the conversation history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub role: Role,
@@ -20,11 +31,13 @@ pub struct HistoryEntry {
 }
 
 impl HistoryEntry {
+    /// Creates a new entry with the current UTC timestamp.
     pub fn new(role: Role, text: String) -> Self {
         Self { role, text, timestamp: Utc::now().to_rfc3339() }
     }
 }
 
+/// Manages an in-memory ring buffer of conversation history backed by a JSONL file.
 pub struct HistoryManager {
     path: PathBuf,
     max_entries: usize,
@@ -32,11 +45,13 @@ pub struct HistoryManager {
 }
 
 impl HistoryManager {
+    /// Loads existing history from `path`, or starts empty if the file doesn't exist.
     pub fn new(path: PathBuf, max_entries: usize) -> Self {
         let entries = Self::load_from_file(&path, max_entries);
         Self { path, max_entries, entries }
     }
 
+    /// Reads history entries from a JSONL file, keeping at most `max_entries`.
     fn load_from_file(path: &Path, max_entries: usize) -> Vec<HistoryEntry> {
         let file = match fs::File::open(path) {
             Ok(f) => f,
@@ -54,6 +69,7 @@ impl HistoryManager {
         entries
     }
 
+    /// Appends a new entry, trims old entries if over the limit, and saves to disk.
     pub fn append(&mut self, entry: HistoryEntry) {
         self.entries.push(entry);
         if self.entries.len() > self.max_entries {
@@ -62,20 +78,24 @@ impl HistoryManager {
         self.save();
     }
 
+    /// Returns the last `n` entries (or fewer if the history is shorter).
     pub fn last_n(&self, n: usize) -> &[HistoryEntry] {
         let start = self.entries.len().saturating_sub(n);
         &self.entries[start..]
     }
 
+    /// Returns all entries currently in memory.
     pub fn entries(&self) -> &[HistoryEntry] {
         &self.entries
     }
 
+    /// Clears all history from memory and deletes the backing file.
     pub fn clear(&mut self) {
         self.entries.clear();
         let _ = fs::remove_file(&self.path);
     }
 
+    /// Writes all entries to the JSONL file, creating parent directories if needed.
     fn save(&self) {
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
@@ -95,7 +115,6 @@ impl HistoryManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn temp_path() -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};

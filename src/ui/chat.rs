@@ -1,3 +1,5 @@
+//! Chat panel rendering — scrollable conversation view with colored roles.
+
 use crate::app::App;
 use crate::history::Role;
 use ratatui::layout::Rect;
@@ -6,6 +8,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::Frame;
 
+/// Renders the chat panel with all messages, auto-scrolling to the bottom
+/// unless the user has manually scrolled up with PageUp.
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
 
@@ -25,6 +29,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(Span::styled(text, style)));
         }
 
+        // Show a blinking cursor for in-progress AI messages
         if msg.text.is_empty() && !msg.complete {
             lines.push(Line::from(Span::styled(
                 "▌", Style::default().fg(Color::Cyan).add_modifier(Modifier::SLOW_BLINK),
@@ -34,6 +39,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(""));
     }
 
+    // Auto-scroll to bottom unless user has manually scrolled
     let inner_height = area.height.saturating_sub(2) as usize;
     let total_lines = lines.len();
     let auto_bottom = if total_lines > inner_height { (total_lines - inner_height) as u16 } else { 0 };

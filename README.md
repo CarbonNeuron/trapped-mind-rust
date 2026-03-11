@@ -101,6 +101,28 @@ The app runs on any machine without requiring specific hardware. At startup, it 
 | Fan | /sys/class/hwmon (Linux) | Scales with temperature |
 | Network | `ip` command (Linux) / sysinfo | Fake wlan0 interface |
 
+## Architecture
+
+```
+main.rs          Entry point, async event loop, background task spawning
+  ├─ app.rs      Core state machine (App struct, input handling, commands)
+  ├─ config.rs   TOML + CLI config loading (3-layer merge: defaults → file → CLI)
+  ├─ ollama.rs   Prompt building, command parsing, model auto-creation
+  ├─ history.rs  JSONL-backed conversation history (HistoryManager)
+  ├─ system.rs   System metrics with per-sensor real/simulated fallback
+  ├─ pet_states.rs  Pet mood enum, priority logic, Unicode art frames
+  └─ ui/
+      ├─ mod.rs    Layout: 4-panel split (chat, pet, stats, input)
+      ├─ chat.rs   Scrollable message list with role-colored text
+      ├─ pet.rs    Animated Unicode face driven by PetMood
+      ├─ stats.rs  Color-coded gauges (CPU, temp, RAM, battery, fan, net)
+      └─ input.rs  Text input bar with visible block cursor
+```
+
+**Event flow:** Background threads/tasks produce `AppEvent`s into a single `mpsc` channel. The main loop in `run_app()` dispatches each event to `App` methods, then redraws the UI. `SystemReader` runs on a dedicated OS thread (it's `!Send` due to the `battery` crate's use of `Rc`).
+
+**Sensor fallback:** At startup, `SystemReader::new()` probes each sensor category. Missing sensors get plausible simulated values from `SimState`, so the app runs identically on any platform.
+
 ## Tech Stack
 
 - [Ratatui](https://ratatui.rs/) + [Crossterm](https://docs.rs/crossterm/) — TUI framework

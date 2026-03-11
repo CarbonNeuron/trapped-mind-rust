@@ -1,3 +1,6 @@
+//! System stats panel — color-coded gauges for CPU, temperature, RAM, battery,
+//! fan speed, uptime, and network interfaces.
+
 use crate::app::App;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -5,6 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
+/// Renders a fixed-width progress bar using block characters.
 fn progress_bar(value: f32, max: f32, width: usize) -> String {
     let ratio = (value / max).clamp(0.0, 1.0);
     let filled = (ratio * width as f32) as usize;
@@ -12,18 +16,22 @@ fn progress_bar(value: f32, max: f32, width: usize) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(empty))
 }
 
+/// Returns a green/yellow/red color based on CPU percentage.
 fn cpu_color(pct: f32) -> Color {
     if pct > 80.0 { Color::Red } else if pct > 50.0 { Color::Yellow } else { Color::Green }
 }
 
+/// Returns a green/yellow/red color based on temperature in Celsius.
 fn temp_color(temp: f32) -> Color {
     if temp > 70.0 { Color::Red } else if temp > 55.0 { Color::Yellow } else { Color::Green }
 }
 
+/// Returns a red/yellow/green color based on battery percentage (inverted scale).
 fn battery_color(pct: f32) -> Color {
     if pct < 20.0 { Color::Red } else if pct < 50.0 { Color::Yellow } else { Color::Green }
 }
 
+/// Renders the system stats panel with live gauges and network info.
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let info = &app.system_info;
 

@@ -1,3 +1,9 @@
+//! Core application state and business logic.
+//!
+//! The [`App`] struct owns all mutable state: chat messages, input buffer,
+//! generation status, and system info. It exposes methods for handling user
+//! input, managing chat history, and driving the command system.
+
 use crate::config::AppConfig;
 use crate::history::{HistoryEntry, HistoryManager, Role};
 use crate::ollama::{self, Command};
@@ -5,41 +11,84 @@ use crate::system::SystemInfo;
 
 use std::time::Instant;
 
+/// Events flowing through the main event loop's unified channel.
 pub enum AppEvent {
+    /// A crossterm terminal event (key press, resize, etc.).
     Terminal(crossterm::event::Event),
+    /// Fresh system metrics from the polling thread.
     SystemTick(SystemInfo),
+    /// A single token from an in-progress Ollama generation.
     Token(String),
+    /// The current generation completed successfully.
     GenerationDone,
+    /// The current generation failed with an error message.
     GenerationError(String),
+    /// The pet animation timer fired.
     AnimationTick,
 }
 
+/// What action the caller should take after [`App::submit_input`] or
+/// [`App::handle_command`] returns.
+#[derive(Debug)]
+pub enum HandleResult {
+    /// No further action needed.
+    Nothing,
+    /// Start an Ollama generation to respond to the given user text.
+    GenerateResponse(String),
+    /// Run the self-update script (`git pull && cargo build`).
+    RunUpdate,
+    /// Ensure the named model exists in Ollama (creating it if needed).
+    EnsureModel(String),
+}
+
+/// A single message displayed in the chat panel.
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
+    /// Who sent this message.
     pub role: Role,
+    /// The message text (may be partially streamed if `complete` is false).
     pub text: String,
+    /// Whether the message has finished streaming.
     pub complete: bool,
 }
 
+/// Root application state for the TUI.
 pub struct App {
+    /// Loaded configuration (Ollama endpoint, model, history settings).
     pub config: AppConfig,
+    /// Persistent conversation history (saved to disk as JSONL).
     pub history: HistoryManager,
+    /// Latest system metrics snapshot.
     pub system_info: SystemInfo,
+    /// All messages shown in the chat panel.
     pub chat_messages: Vec<ChatMessage>,
+    /// Current text in the input bar.
     pub input_buffer: String,
+    /// Byte offset of the cursor within `input_buffer`.
     pub input_cursor: usize,
+    /// If `Some`, the chat panel is manually scrolled to this line offset.
     pub manual_scroll: Option<u16>,
+    /// Whether an Ollama generation is currently in progress.
     pub is_generating: bool,
+    /// Whether the user is actively typing (for pet mood).
     pub is_user_typing: bool,
+    /// Set to `true` to exit the event loop.
     pub should_quit: bool,
+    /// Animation frame counter for the pet face (wraps on overflow).
     pub pet_frame_index: usize,
+    /// Timestamp of the last user interaction (for auto-think delay).
     pub last_user_input_time: Instant,
+    /// Currently active Ollama model name.
     pub model: String,
+    /// Input history for Up/Down arrow recall.
     pub command_history: Vec<String>,
+    /// Current position in `command_history` (`None` = not browsing).
     pub command_history_index: Option<usize>,
 }
 
 impl App {
+    /// Creates a new `App` with the given configuration, loading any persisted
+    /// history from disk.
     pub fn new(config: AppConfig) -> Self {
         let history = HistoryManager::new(config.history_path.clone(), config.max_history);
         let model = config.model.clone();
@@ -74,26 +123,31 @@ impl App {
         }
     }
 
+    /// Appends a system-level message (e.g. sensor status, errors) to the chat.
     pub fn add_system_message(&mut self, text: String) {
         self.chat_messages.push(ChatMessage { role: Role::System, text, complete: true });
     }
 
+    /// Records a user message in both the chat display and persistent history.
     pub fn add_user_message(&mut self, text: String) {
         self.history.append(HistoryEntry::new(Role::User, text.clone()));
         self.chat_messages.push(ChatMessage { role: Role::User, text, complete: true });
     }
 
+    /// Begins a new AI message placeholder for token-by-token streaming.
     pub fn start_ai_message(&mut self) {
         self.chat_messages.push(ChatMessage { role: Role::Ai, text: String::new(), complete: false });
         self.is_generating = true;
     }
 
+    /// Appends a streamed token to the current in-progress AI message.
     pub fn append_token(&mut self, token: &str) {
         if let Some(last) = self.chat_messages.last_mut() {
             if !last.complete { last.text.push_str(token); }
         }
     }
 
+    /// Marks the current AI message as complete and saves it to history.
     pub fn finish_ai_message(&mut self) {
         if let Some(last) = self.chat_messages.last_mut() {
             if !last.complete {
@@ -104,6 +158,8 @@ impl App {
         self.is_generating = false;
     }
 
+    /// Handles a generation error: removes the empty placeholder (if any)
+    /// and shows the error as a system message.
     pub fn handle_generation_error(&mut self, error: String) {
         if let Some(last) = self.chat_messages.last() {
             if !last.complete && last.text.is_empty() {
@@ -114,11 +170,14 @@ impl App {
         self.add_system_message(format!("[error] {}", error));
     }
 
+    /// Returns `true` if enough idle time has elapsed to trigger an autonomous thought.
     pub fn should_auto_think(&self) -> bool {
         !self.is_generating
             && self.last_user_input_time.elapsed().as_secs() >= self.config.auto_think_delay_secs
     }
 
+    /// Parses and executes a command or chat message, returning the action
+    /// the caller should take (e.g. start a generation, run an update).
     pub fn handle_command(&mut self, input: &str) -> HandleResult {
         let cmd = ollama::parse_input(input);
         match cmd {
@@ -170,6 +229,7 @@ impl App {
         }
     }
 
+    /// Inserts a character at the current cursor position.
     pub fn insert_char(&mut self, c: char) {
         self.input_buffer.insert(self.input_cursor, c);
         self.input_cursor += c.len_utf8();
@@ -177,6 +237,7 @@ impl App {
         self.last_user_input_time = Instant::now();
     }
 
+    /// Deletes the character immediately before the cursor.
     pub fn delete_char_before_cursor(&mut self) {
         if self.input_cursor > 0 {
             let prev = self.input_buffer[..self.input_cursor]
@@ -186,6 +247,7 @@ impl App {
         }
     }
 
+    /// Moves the cursor one character to the left (respects multi-byte chars).
     pub fn move_cursor_left(&mut self) {
         if self.input_cursor > 0 {
             self.input_cursor = self.input_buffer[..self.input_cursor]
@@ -193,6 +255,7 @@ impl App {
         }
     }
 
+    /// Moves the cursor one character to the right (respects multi-byte chars).
     pub fn move_cursor_right(&mut self) {
         if self.input_cursor < self.input_buffer.len() {
             self.input_cursor = self.input_buffer[self.input_cursor..]
@@ -202,6 +265,8 @@ impl App {
         }
     }
 
+    /// Submits the current input buffer, adding it to command history and
+    /// dispatching it through [`handle_command`](Self::handle_command).
     pub fn submit_input(&mut self) -> HandleResult {
         if self.input_buffer.trim().is_empty() { return HandleResult::Nothing; }
         let input = self.input_buffer.clone();
@@ -213,6 +278,7 @@ impl App {
         self.handle_command(&input)
     }
 
+    /// Recalls the previous entry from command history (Up arrow).
     pub fn history_up(&mut self) {
         if self.command_history.is_empty() { return; }
         let idx = match self.command_history_index {
@@ -225,6 +291,8 @@ impl App {
         self.input_cursor = self.input_buffer.len();
     }
 
+    /// Recalls the next entry from command history (Down arrow), or clears
+    /// the input if at the end of the history.
     pub fn history_down(&mut self) {
         match self.command_history_index {
             Some(i) if i + 1 < self.command_history.len() => {
@@ -241,14 +309,6 @@ impl App {
             None => {}
         }
     }
-}
-
-#[derive(Debug)]
-pub enum HandleResult {
-    Nothing,
-    GenerateResponse(String),
-    RunUpdate,
-    EnsureModel(String),
 }
 
 #[cfg(test)]

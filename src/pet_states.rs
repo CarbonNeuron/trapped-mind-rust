@@ -1,17 +1,36 @@
+//! Pet face mood states and Unicode art animation frames.
+//!
+//! The pet face reacts to system conditions with 7 mood states, each with
+//! its own color and set of animation frames. Moods are resolved in priority
+//! order: hardware alerts (hot, high CPU, low battery) take precedence over
+//! behavioral states (thinking, listening, idle).
+
 use crate::system::SystemInfo;
 
+/// The pet face's current mood, determined by system state and app activity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PetMood {
+    /// Temperature > 70°C — sweating, distressed face.
     Hot,
+    /// CPU > 80% — vibrating, overwhelmed face.
     HighCpu,
+    /// Battery < 20% — drowsy, worried face.
     LowBattery,
+    /// AC power connected — happy, relaxed face with lightning bolt.
     Charging,
+    /// Ollama generation in progress — contemplative face with thought bubbles.
     Thinking,
+    /// User is typing — attentive face with wide eyes.
     Listening,
+    /// Default state — calm, blinking face.
     Idle,
 }
 
 impl PetMood {
+    /// Determines the current mood from system metrics and app state.
+    ///
+    /// Moods are checked in priority order: hardware alerts first, then
+    /// behavioral states, falling back to [`PetMood::Idle`].
     pub fn from_state(info: &SystemInfo, is_generating: bool, is_user_typing: bool) -> Self {
         if info.temp_celsius > 70.0 {
             PetMood::Hot
@@ -32,6 +51,7 @@ impl PetMood {
         }
     }
 
+    /// Returns the display color for this mood.
     pub fn color(&self) -> ratatui::style::Color {
         use ratatui::style::Color;
         match self {
@@ -45,6 +65,7 @@ impl PetMood {
         }
     }
 
+    /// Returns the animation frames for this mood.
     pub fn frames(&self) -> &[&[&str]] {
         match self {
             PetMood::Idle => &IDLE_FRAMES,
@@ -57,6 +78,8 @@ impl PetMood {
         }
     }
 }
+
+// -- Animation frames: each mood has 2-4 frames of Unicode art --
 
 const IDLE_FRAMES: [&[&str]; 4] = [
     &[

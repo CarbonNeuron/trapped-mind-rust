@@ -1,3 +1,5 @@
+//! Input bar panel — text input with visible cursor and placeholder text.
+
 use crate::app::App;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -5,6 +7,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
+/// Renders the input bar with a blinking block cursor.
+///
+/// Shows placeholder text when the buffer is empty, otherwise renders the
+/// input text with a highlighted cursor character.
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let display_text = if app.input_buffer.is_empty() {
         Line::from(Span::styled(
@@ -18,6 +24,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         let (cursor_display, rest) = if after_cursor.is_empty() {
             (" ".to_string(), "")
         } else {
+            // Extract the first character after the cursor for highlighting
             let first_char_end = after_cursor
                 .char_indices()
                 .nth(1)

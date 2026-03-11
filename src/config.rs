@@ -1,39 +1,56 @@
+//! Configuration loading from TOML file and CLI arguments.
+//!
+//! Configuration is resolved in three layers (lowest to highest priority):
+//! 1. Built-in defaults ([`AppConfig::default`])
+//! 2. TOML file at `~/.config/trapped-mind/config.toml`
+//! 3. CLI flags (`--model`, `--ollama-host`, `--ollama-port`)
+
 use clap::Parser;
 use serde::Deserialize;
 use std::path::PathBuf;
 
+/// Command-line arguments parsed by clap.
 #[derive(Parser, Debug)]
 #[command(name = "trapped-mind", about = "AI consciousness trapped in a laptop")]
 pub struct CliArgs {
+    /// Ollama model name (overrides config file).
     #[arg(long)]
     pub model: Option<String>,
 
+    /// Ollama server URL (e.g. "http://192.168.1.100").
     #[arg(long)]
     pub ollama_host: Option<String>,
 
+    /// Ollama server port number.
     #[arg(long)]
     pub ollama_port: Option<u16>,
 }
 
+/// Raw TOML file structure — all fields optional so partial configs work.
 #[derive(Debug, Deserialize)]
 struct FileConfig {
     ollama_host: Option<String>,
     ollama_port: Option<u16>,
     model: Option<String>,
-    #[allow(dead_code)]
-    hold_seconds: Option<u64>,
-max_history: Option<usize>,
+    max_history: Option<usize>,
     history_path: Option<String>,
     auto_think_delay: Option<u64>,
 }
 
+/// Resolved application configuration with all values populated.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    /// Ollama server URL (e.g. "http://localhost").
     pub ollama_host: String,
+    /// Ollama server port (default 11434).
     pub ollama_port: u16,
+    /// Ollama model name to use for generation.
     pub model: String,
+    /// Maximum number of history entries to keep in memory and on disk.
     pub max_history: usize,
+    /// File path for persisting conversation history (JSONL format).
     pub history_path: PathBuf,
+    /// Seconds of idle time before the AI generates an autonomous thought.
     pub auto_think_delay_secs: u64,
 }
 
@@ -53,6 +70,7 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// Loads configuration by merging defaults, TOML file, and CLI overrides.
     pub fn load(cli: &CliArgs) -> Self {
         let mut config = AppConfig::default();
 

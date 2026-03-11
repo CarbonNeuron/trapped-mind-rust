@@ -1,3 +1,8 @@
+//! UI rendering — splits the terminal into four panels and delegates to submodules.
+//!
+//! Layout: chat (left 70%), pet face (top-right 30%), system stats
+//! (bottom-right 30%), and input bar (full-width bottom).
+
 pub mod chat;
 pub mod input;
 pub mod pet;
@@ -7,6 +12,7 @@ use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 
+/// Renders the full application UI into the given terminal frame.
 pub fn draw(frame: &mut Frame, app: &App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)

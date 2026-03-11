@@ -1,3 +1,5 @@
+//! Pet face panel — animated Unicode robot face that reacts to system state.
+
 use crate::app::App;
 use crate::pet_states::PetMood;
 use ratatui::layout::{Alignment, Rect};
@@ -6,6 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
+/// Renders the pet face with the appropriate mood animation frame.
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let mood = PetMood::from_state(&app.system_info, app.is_generating, app.is_user_typing);
     let frames = mood.frames();

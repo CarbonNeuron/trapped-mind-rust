@@ -1,3 +1,9 @@
+//! Application entry point and async event loop.
+//!
+//! Sets up the terminal, spawns background tasks for system polling, terminal
+//! event reading, and animation ticking, then runs the main event loop that
+//! dispatches [`AppEvent`]s to the [`App`] state machine.
+
 mod app;
 mod config;
 mod history;
@@ -25,7 +31,7 @@ async fn main() -> std::io::Result<()> {
     let config = AppConfig::load(&cli);
     let mut app = App::new(config.clone());
 
-    // Show sensor status (SystemReader is !Send, so we create it on the stack briefly)
+    // Display which sensors are real vs simulated at startup
     {
         let sys_reader = SystemReader::new();
         app.add_system_message(sys_reader.sensor_status_message());
@@ -33,7 +39,7 @@ async fn main() -> std::io::Result<()> {
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
-    // Spawn system stats poller on a dedicated thread (SystemReader is !Send due to battery::Rc)
+    // SystemReader is !Send (battery crate uses Rc), so it must live on a dedicated OS thread
     let tx_sys = tx.clone();
     std::thread::spawn(move || {
         let mut reader = SystemReader::new();
@@ -46,7 +52,7 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
-    // Spawn terminal event reader
+    // Forward crossterm terminal events into the unified channel
     let tx_term = tx.clone();
     tokio::spawn(async move {
         loop {
@@ -64,7 +70,7 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
-    // Spawn animation ticker
+    // Drive pet face animation at 2 fps
     let tx_anim = tx.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -76,23 +82,22 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
-    // Ollama client
     let ollama = Ollama::new(&config.ollama_host, config.ollama_port);
 
-    // Ensure model exists (create from base model if missing)
+    // Auto-create the "trapped" model with personality if it doesn't exist yet
     match crate::ollama::ensure_model_exists(&ollama, &config.model).await {
         Ok(Some(msg)) => app.add_system_message(msg),
-        Ok(None) => {} // Model already exists
+        Ok(None) => {}
         Err(e) => app.add_system_message(format!("[warning] {}", e)),
     }
 
-    // Init terminal
     let mut terminal = ratatui::init();
     let result = run_app(&mut terminal, &mut app, &mut rx, &tx, &ollama).await;
     ratatui::restore();
     result
 }
 
+/// Main event loop — draws the UI and dispatches events until the app exits.
 async fn run_app(
     terminal: &mut DefaultTerminal,
     app: &mut App,
@@ -140,6 +145,7 @@ async fn run_app(
     Ok(())
 }
 
+/// Dispatches a single key press to the appropriate [`App`] method.
 fn handle_key(
     app: &mut App,
     key: KeyEvent,
@@ -207,6 +213,10 @@ fn handle_key(
     }
 }
 
+/// Starts an Ollama streaming generation in a background task.
+///
+/// If `user_message` is `Some`, builds a response prompt; otherwise builds an
+/// autonomous thought prompt. Tokens are sent back via the event channel.
 fn spawn_generation(
     ollama: &Ollama,
     app: &mut App,
@@ -263,6 +273,9 @@ fn spawn_generation(
     });
 }
 
+/// Ensures a model exists in Ollama, creating it if necessary.
+///
+/// Reports the result back through the event channel as a system message.
 fn spawn_ensure_model(
     ollama: &Ollama,
     model_name: &str,
@@ -273,7 +286,7 @@ fn spawn_ensure_model(
     tokio::spawn(async move {
         match crate::ollama::ensure_model_exists(&ollama, &model_name).await {
             Ok(Some(msg)) => {
-                let _ = tx.send(AppEvent::GenerationError(msg)); // Shows as system message
+                let _ = tx.send(AppEvent::GenerationError(msg));
             }
             Ok(None) => {
                 let _ = tx.send(AppEvent::GenerationError(format!(
@@ -288,6 +301,7 @@ fn spawn_ensure_model(
     });
 }
 
+/// Runs `git pull && cargo build --release` in a background task.
 fn spawn_update(tx: mpsc::UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
         let output = tokio::process::Command::new("bash")

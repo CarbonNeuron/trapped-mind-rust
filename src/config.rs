@@ -20,8 +20,9 @@ struct FileConfig {
     ollama_host: Option<String>,
     ollama_port: Option<u16>,
     model: Option<String>,
+    #[allow(dead_code)]
     hold_seconds: Option<u64>,
-    max_history: Option<usize>,
+max_history: Option<usize>,
     history_path: Option<String>,
     auto_think_delay: Option<u64>,
 }

@@ -9,6 +9,7 @@ pub struct NetworkInterface {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SystemInfo {
     pub cpu_percent: f32,
     pub temp_celsius: f32,
@@ -96,6 +97,7 @@ impl SimState {
         }
     }
 
+    #[allow(dead_code)]
     fn cpu(&self) -> f32 {
         let base = 47.5 + 37.5 * (self.cpu_phase.sin());
         (base as f32).clamp(10.0, 85.0)

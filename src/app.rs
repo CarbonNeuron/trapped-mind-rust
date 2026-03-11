@@ -246,7 +246,6 @@ impl App {
 pub enum HandleResult {
     Nothing,
     GenerateResponse(String),
-    GenerateAutonomous,
     RunUpdate,
 }
 

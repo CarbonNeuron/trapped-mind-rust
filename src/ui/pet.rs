@@ -2,7 +2,7 @@
 
 use crate::app::App;
 use crate::pet_states::PetMood;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
@@ -24,6 +24,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered()
         .title(format!(" {:?} ", mood))
         .style(Style::default().fg(Color::DarkGray));
-    let paragraph = Paragraph::new(lines).block(block).alignment(Alignment::Center);
+    let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
 }

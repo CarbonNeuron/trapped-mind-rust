@@ -166,7 +166,7 @@ pub fn parse_input(input: &str) -> Command {
         Command::Update
     } else if trimmed.eq_ignore_ascii_case("/stats") {
         Command::Stats
-    } else if trimmed.eq_ignore_ascii_case("/quit") {
+    } else if trimmed.eq_ignore_ascii_case("/quit") || trimmed.eq_ignore_ascii_case("/exit") {
         Command::Quit
     } else if let Some(model_name) = trimmed.strip_prefix("/model ") {
         Command::Model(model_name.trim().to_string())
@@ -231,6 +231,8 @@ mod tests {
         assert_eq!(parse_input("/update"), Command::Update);
         assert_eq!(parse_input("/stats"), Command::Stats);
         assert_eq!(parse_input("/quit"), Command::Quit);
+        assert_eq!(parse_input("/exit"), Command::Quit);
+        assert_eq!(parse_input("/EXIT"), Command::Quit);
         assert_eq!(parse_input("/model qwen2.5:7b"), Command::Model("qwen2.5:7b".to_string()));
         assert_eq!(parse_input("hello world"), Command::Message("hello world".to_string()));
     }

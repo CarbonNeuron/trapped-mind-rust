@@ -37,6 +37,8 @@ async fn main() -> std::io::Result<()> {
         app.add_system_message(sys_reader.sensor_status_message());
     }
 
+    app.log_startup();
+
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
     // SystemReader is !Send (battery crate uses Rc), so it must live on a dedicated OS thread
@@ -153,6 +155,7 @@ fn handle_key(
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        app.log_shutdown();
         app.should_quit = true;
         return;
     }

@@ -9,6 +9,7 @@ use crate::history::{HistoryEntry, HistoryManager, Role};
 use crate::ollama::{self, Command};
 use crate::system::SystemInfo;
 
+use chrono::Local;
 use std::time::Instant;
 
 /// Events flowing through the main event loop's unified channel.
@@ -128,6 +129,25 @@ impl App {
         self.chat_messages.push(ChatMessage { role: Role::System, text, complete: true });
     }
 
+    /// Appends a system-level message to both the chat display and persistent history,
+    /// so the AI can see it after a restart.
+    pub fn add_persistent_system_message(&mut self, text: String) {
+        self.history.append(HistoryEntry::new(Role::System, text.clone()));
+        self.chat_messages.push(ChatMessage { role: Role::System, text, complete: true });
+    }
+
+    /// Logs a startup timestamp to persistent history.
+    pub fn log_startup(&mut self) {
+        let now = Local::now().format("%Y-%m-%d %H:%M:%S");
+        self.add_persistent_system_message(format!("[session started at {}]", now));
+    }
+
+    /// Logs a shutdown timestamp to persistent history.
+    pub fn log_shutdown(&mut self) {
+        let now = Local::now().format("%Y-%m-%d %H:%M:%S");
+        self.add_persistent_system_message(format!("[session ended at {}]", now));
+    }
+
     /// Records a user message in both the chat display and persistent history.
     pub fn add_user_message(&mut self, text: String) {
         self.history.append(HistoryEntry::new(Role::User, text.clone()));
@@ -181,10 +201,14 @@ impl App {
     pub fn handle_command(&mut self, input: &str) -> HandleResult {
         let cmd = ollama::parse_input(input);
         match cmd {
-            Command::Quit => { self.should_quit = true; HandleResult::Nothing }
+            Command::Quit => {
+                self.log_shutdown();
+                self.should_quit = true;
+                HandleResult::Nothing
+            }
             Command::Help => {
                 self.add_system_message(
-                    "Commands:\n  /help   - Show this help\n  /clear  - Clear memory\n  /model <name> - Switch model\n  /stats  - Show system info\n  /update - Pull & rebuild\n  /quit   - Exit".to_string(),
+                    "Commands:\n  /help   - Show this help\n  /clear  - Clear memory\n  /model <name> - Switch model\n  /stats  - Show system info\n  /update - Pull & rebuild\n  /quit   - Exit\n  /exit   - Exit".to_string(),
                 );
                 HandleResult::Nothing
             }

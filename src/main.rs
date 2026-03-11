@@ -6,6 +6,275 @@ mod pet_states;
 mod system;
 mod ui;
 
-fn main() {
-    println!("trapped-mind v0.1.0");
+use app::{App, AppEvent, HandleResult};
+use config::{AppConfig, CliArgs};
+use system::SystemReader;
+
+use clap::Parser;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ollama_rs::generation::completion::request::GenerationRequest;
+use ollama_rs::Ollama;
+use ratatui::DefaultTerminal;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let cli = CliArgs::parse();
+    let config = AppConfig::load(&cli);
+    let mut app = App::new(config.clone());
+
+    // Show sensor status (SystemReader is !Send, so we create it on the stack briefly)
+    {
+        let sys_reader = SystemReader::new();
+        app.add_system_message(sys_reader.sensor_status_message());
+    }
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+
+    // Spawn system stats poller on a dedicated thread (SystemReader is !Send due to battery::Rc)
+    let tx_sys = tx.clone();
+    std::thread::spawn(move || {
+        let mut reader = SystemReader::new();
+        loop {
+            std::thread::sleep(Duration::from_millis(200));
+            let info = reader.read();
+            if tx_sys.send(AppEvent::SystemTick(info)).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Spawn terminal event reader
+    let tx_term = tx.clone();
+    tokio::spawn(async move {
+        loop {
+            match tokio::task::spawn_blocking(|| event::poll(Duration::from_millis(50))).await {
+                Ok(Ok(true)) => {
+                    if let Ok(evt) = event::read() {
+                        if tx_term.send(AppEvent::Terminal(evt)).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Ok(Ok(false)) => {}
+                _ => break,
+            }
+        }
+    });
+
+    // Spawn animation ticker
+    let tx_anim = tx.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(500));
+        loop {
+            interval.tick().await;
+            if tx_anim.send(AppEvent::AnimationTick).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Ollama client
+    let ollama = Ollama::new(&config.ollama_host, config.ollama_port);
+
+    // Init terminal
+    let mut terminal = ratatui::init();
+    let result = run_app(&mut terminal, &mut app, &mut rx, &tx, &ollama).await;
+    ratatui::restore();
+    result
+}
+
+async fn run_app(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    rx: &mut mpsc::UnboundedReceiver<AppEvent>,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    ollama: &Ollama,
+) -> std::io::Result<()> {
+    terminal.draw(|frame| ui::draw(frame, app))?;
+
+    loop {
+        if app.should_auto_think() {
+            spawn_generation(ollama, app, tx, None);
+        }
+
+        match rx.recv().await {
+            Some(AppEvent::Terminal(Event::Key(key))) if key.kind == KeyEventKind::Press => {
+                handle_key(app, key, ollama, tx);
+                if app.should_quit {
+                    break;
+                }
+            }
+            Some(AppEvent::Terminal(Event::Resize(_, _))) => {}
+            Some(AppEvent::Terminal(_)) => {}
+            Some(AppEvent::SystemTick(info)) => {
+                app.system_info = info;
+            }
+            Some(AppEvent::Token(token)) => {
+                app.append_token(&token);
+            }
+            Some(AppEvent::GenerationDone) => {
+                app.finish_ai_message();
+            }
+            Some(AppEvent::GenerationError(err)) => {
+                app.handle_generation_error(err);
+            }
+            Some(AppEvent::AnimationTick) => {
+                app.pet_frame_index = app.pet_frame_index.wrapping_add(1);
+            }
+            None => break,
+        }
+
+        terminal.draw(|frame| ui::draw(frame, app))?;
+    }
+
+    Ok(())
+}
+
+fn handle_key(
+    app: &mut App,
+    key: KeyEvent,
+    ollama: &Ollama,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        app.should_quit = true;
+        return;
+    }
+
+    match key.code {
+        KeyCode::Enter => {
+            let result = app.submit_input();
+            match result {
+                HandleResult::GenerateResponse(text) => {
+                    spawn_generation(ollama, app, tx, Some(text));
+                }
+                HandleResult::RunUpdate => {
+                    spawn_update(tx.clone());
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Char(c) => {
+            app.insert_char(c);
+        }
+        KeyCode::Backspace => {
+            app.delete_char_before_cursor();
+        }
+        KeyCode::Left => {
+            app.move_cursor_left();
+        }
+        KeyCode::Right => {
+            app.move_cursor_right();
+        }
+        KeyCode::Home => {
+            app.input_cursor = 0;
+        }
+        KeyCode::End => {
+            app.input_cursor = app.input_buffer.len();
+        }
+        KeyCode::Up => {
+            app.history_up();
+        }
+        KeyCode::Down => {
+            app.history_down();
+        }
+        KeyCode::PageUp => {
+            let current = app.manual_scroll.unwrap_or(u16::MAX);
+            app.manual_scroll = Some(current.saturating_sub(5));
+        }
+        KeyCode::PageDown => {
+            if let Some(offset) = app.manual_scroll {
+                app.manual_scroll = Some(offset.saturating_add(5));
+            }
+        }
+        KeyCode::Esc => {
+            app.manual_scroll = None;
+        }
+        _ => {}
+    }
+}
+
+fn spawn_generation(
+    ollama: &Ollama,
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    user_message: Option<String>,
+) {
+    if app.is_generating {
+        return;
+    }
+
+    let history_entries = app.history.last_n(10).to_vec();
+    let info = app.system_info.clone();
+    let model = app.model.clone();
+
+    let prompt = match &user_message {
+        Some(msg) => crate::ollama::build_response_prompt(&info, &history_entries, msg),
+        None => crate::ollama::build_autonomous_prompt(&info, &history_entries),
+    };
+
+    app.start_ai_message();
+    app.last_user_input_time = std::time::Instant::now();
+
+    let ollama = ollama.clone();
+    let tx = tx.clone();
+
+    tokio::spawn(async move {
+        let request = GenerationRequest::new(model, prompt);
+        match ollama.generate_stream(request).await {
+            Ok(mut stream) => {
+                while let Some(res) = stream.next().await {
+                    match res {
+                        Ok(responses) => {
+                            for resp in responses {
+                                if tx.send(AppEvent::Token(resp.response)).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::GenerationError(format!(
+                                "Stream error: {}",
+                                e
+                            )));
+                            return;
+                        }
+                    }
+                }
+                let _ = tx.send(AppEvent::GenerationDone);
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::GenerationError(format!("Ollama error: {}", e)));
+            }
+        }
+    });
+}
+
+fn spawn_update(tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let output = tokio::process::Command::new("bash")
+            .args([
+                "-c",
+                "cd $(dirname $(which trapped-mind 2>/dev/null || echo .)) && cd .. && git pull && cargo build --release 2>&1",
+            ])
+            .output()
+            .await;
+
+        match output {
+            Ok(out) => {
+                let msg = String::from_utf8_lossy(&out.stdout).to_string()
+                    + &String::from_utf8_lossy(&out.stderr);
+                let _ = tx.send(AppEvent::GenerationError(format!(
+                    "Update output:\n{}",
+                    msg
+                )));
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::GenerationError(format!("Update failed: {}", e)));
+            }
+        }
+    });
 }

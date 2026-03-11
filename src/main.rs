@@ -18,7 +18,6 @@ use system::SystemReader;
 
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ollama_rs::generation::completion::request::GenerationRequest;
 use ollama_rs::Ollama;
 use ratatui::DefaultTerminal;
 use std::time::Duration;
@@ -216,10 +215,11 @@ fn handle_key(
     }
 }
 
-/// Starts an Ollama streaming generation in a background task.
+/// Starts an Ollama streaming chat generation in a background task.
 ///
-/// If `user_message` is `Some`, builds a response prompt; otherwise builds an
-/// autonomous thought prompt. Tokens are sent back via the event channel.
+/// If `user_message` is `Some`, builds a response request; otherwise builds an
+/// autonomous thought request. Uses the chat API with proper role-tagged
+/// messages so the model sees its own previous responses as assistant messages.
 fn spawn_generation(
     ollama: &Ollama,
     app: &mut App,
@@ -234,9 +234,9 @@ fn spawn_generation(
     let info = app.system_info.clone();
     let model = app.model.clone();
 
-    let prompt = match &user_message {
-        Some(msg) => crate::ollama::build_response_prompt(&info, &history_entries, msg),
-        None => crate::ollama::build_autonomous_prompt(&info, &history_entries),
+    let request = match &user_message {
+        Some(msg) => crate::ollama::build_response_request(&info, &history_entries, msg, &model),
+        None => crate::ollama::build_autonomous_request(&info, &history_entries, &model),
     };
 
     app.start_ai_message();
@@ -246,27 +246,31 @@ fn spawn_generation(
     let tx = tx.clone();
 
     tokio::spawn(async move {
-        let request = GenerationRequest::new(model, prompt);
-        match ollama.generate_stream(request).await {
+        match ollama.send_chat_messages_stream(request).await {
             Ok(mut stream) => {
                 while let Some(res) = stream.next().await {
                     match res {
-                        Ok(responses) => {
-                            for resp in responses {
-                                if tx.send(AppEvent::Token(resp.response)).is_err() {
+                        Ok(resp) => {
+                            let token = resp.message.content;
+                            if !token.is_empty() {
+                                if tx.send(AppEvent::Token(token)).is_err() {
                                     return;
                                 }
                             }
+                            if resp.done {
+                                let _ = tx.send(AppEvent::GenerationDone);
+                                return;
+                            }
                         }
-                        Err(e) => {
-                            let _ = tx.send(AppEvent::GenerationError(format!(
-                                "Stream error: {}",
-                                e
-                            )));
+                        Err(_) => {
+                            let _ = tx.send(AppEvent::GenerationError(
+                                "Stream error".to_string(),
+                            ));
                             return;
                         }
                     }
                 }
+                // Stream ended without done=true
                 let _ = tx.send(AppEvent::GenerationDone);
             }
             Err(e) => {

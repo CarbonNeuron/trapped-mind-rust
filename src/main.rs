@@ -79,6 +79,13 @@ async fn main() -> std::io::Result<()> {
     // Ollama client
     let ollama = Ollama::new(&config.ollama_host, config.ollama_port);
 
+    // Ensure model exists (create from base model if missing)
+    match crate::ollama::ensure_model_exists(&ollama, &config.model).await {
+        Ok(Some(msg)) => app.add_system_message(msg),
+        Ok(None) => {} // Model already exists
+        Err(e) => app.add_system_message(format!("[warning] {}", e)),
+    }
+
     // Init terminal
     let mut terminal = ratatui::init();
     let result = run_app(&mut terminal, &mut app, &mut rx, &tx, &ollama).await;
@@ -153,6 +160,9 @@ fn handle_key(
                 }
                 HandleResult::RunUpdate => {
                     spawn_update(tx.clone());
+                }
+                HandleResult::EnsureModel(model_name) => {
+                    spawn_ensure_model(ollama, &model_name, tx.clone());
                 }
                 _ => {}
             }
@@ -248,6 +258,31 @@ fn spawn_generation(
             }
             Err(e) => {
                 let _ = tx.send(AppEvent::GenerationError(format!("Ollama error: {}", e)));
+            }
+        }
+    });
+}
+
+fn spawn_ensure_model(
+    ollama: &Ollama,
+    model_name: &str,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    let ollama = ollama.clone();
+    let model_name = model_name.to_string();
+    tokio::spawn(async move {
+        match crate::ollama::ensure_model_exists(&ollama, &model_name).await {
+            Ok(Some(msg)) => {
+                let _ = tx.send(AppEvent::GenerationError(msg)); // Shows as system message
+            }
+            Ok(None) => {
+                let _ = tx.send(AppEvent::GenerationError(format!(
+                    "Model '{}' is ready",
+                    model_name
+                )));
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::GenerationError(format!("[warning] {}", e)));
             }
         }
     });

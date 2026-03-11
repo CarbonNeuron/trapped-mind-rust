@@ -151,11 +151,12 @@ impl App {
             Command::Model(name) => {
                 if name.is_empty() {
                     self.add_system_message(format!("Current model: {}", self.model));
+                    HandleResult::Nothing
                 } else {
                     self.model = name.clone();
-                    self.add_system_message(format!("Model switched to: {}", name));
+                    self.add_system_message(format!("Switching to model: {}", name));
+                    HandleResult::EnsureModel(name)
                 }
-                HandleResult::Nothing
             }
             Command::Update => {
                 self.add_system_message("Running update...".to_string());
@@ -247,6 +248,7 @@ pub enum HandleResult {
     Nothing,
     GenerateResponse(String),
     RunUpdate,
+    EnsureModel(String),
 }
 
 #[cfg(test)]

@@ -1,3 +1,5 @@
+mod config;
+
 fn main() {
-    println!("Hello, world!");
+    println!("trapped-mind v0.1.0");
 }

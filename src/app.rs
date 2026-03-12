@@ -133,6 +133,8 @@ pub struct ChatMessage {
     pub text: String,
     /// Whether the message has finished streaming.
     pub complete: bool,
+    /// When this message was created (local time, formatted for display).
+    pub timestamp: String,
 }
 
 /// Root application state for the TUI.
@@ -187,7 +189,18 @@ impl App {
         let chat_messages: Vec<ChatMessage> = history
             .entries()
             .iter()
-            .map(|e| ChatMessage { role: e.role.clone(), text: e.text.clone(), complete: true })
+            .map(|e| {
+                // Parse stored RFC3339 timestamp to local time for display
+                let display_time = chrono::DateTime::parse_from_rfc3339(&e.timestamp)
+                    .map(|dt| dt.with_timezone(&Local).format("%H:%M:%S").to_string())
+                    .unwrap_or_default();
+                ChatMessage {
+                    role: e.role.clone(),
+                    text: e.text.clone(),
+                    complete: true,
+                    timestamp: display_time,
+                }
+            })
             .collect();
 
         Self {
@@ -218,16 +231,27 @@ impl App {
         }
     }
 
+    /// Returns the current local time formatted for display.
+    fn now_display() -> String {
+        Local::now().format("%H:%M:%S").to_string()
+    }
+
     /// Appends a system-level message (e.g. sensor status, errors) to the chat.
     pub fn add_system_message(&mut self, text: String) {
-        self.chat_messages.push(ChatMessage { role: Role::System, text, complete: true });
+        self.chat_messages.push(ChatMessage {
+            role: Role::System, text, complete: true,
+            timestamp: Self::now_display(),
+        });
     }
 
     /// Appends a system-level message to both the chat display and persistent history,
     /// so the AI can see it after a restart.
     pub fn add_persistent_system_message(&mut self, text: String) {
         self.history.append(HistoryEntry::new(Role::System, text.clone()));
-        self.chat_messages.push(ChatMessage { role: Role::System, text, complete: true });
+        self.chat_messages.push(ChatMessage {
+            role: Role::System, text, complete: true,
+            timestamp: Self::now_display(),
+        });
     }
 
     /// Logs a startup timestamp to persistent history.
@@ -245,12 +269,18 @@ impl App {
     /// Records a user message in both the chat display and persistent history.
     pub fn add_user_message(&mut self, text: String) {
         self.history.append(HistoryEntry::new(Role::User, text.clone()));
-        self.chat_messages.push(ChatMessage { role: Role::User, text, complete: true });
+        self.chat_messages.push(ChatMessage {
+            role: Role::User, text, complete: true,
+            timestamp: Self::now_display(),
+        });
     }
 
     /// Begins a new AI message placeholder for token-by-token streaming.
     pub fn start_ai_message(&mut self) {
-        self.chat_messages.push(ChatMessage { role: Role::Ai, text: String::new(), complete: false });
+        self.chat_messages.push(ChatMessage {
+            role: Role::Ai, text: String::new(), complete: false,
+            timestamp: Self::now_display(),
+        });
         self.is_generating = true;
     }
 

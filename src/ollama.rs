@@ -153,10 +153,17 @@ Your current mood: {mood}
 
 Draw something that reflects how you feel right now. It could be abstract patterns, scenes, symbols, landscapes, creatures, text art, diagrams — whatever you want. Be creative and surprising. Don't always draw the same thing.
 
+You can add COLOR to your art using inline tags. Available colors:
+  {{red}} {{green}} {{blue}} {{yellow}} {{cyan}} {{magenta}} {{white}} {{gray}}
+Use {{/}} to reset to default. Example: "{{red}}***{{/}} hello {{blue}}~~~{{/}}"
+Color tags are NOT counted toward the line width — only visible characters count.
+Color is optional. Use it when it adds to the expression, not on every character.
+
 RULES:
 - Output EXACTLY {height} lines
-- Each line must be EXACTLY {width} characters (pad with spaces if needed)
-- Use only printable ASCII characters (letters, numbers, symbols, spaces)
+- Each line must be EXACTLY {width} VISIBLE characters (color tags don't count)
+- Pad with spaces if a line is shorter than {width} visible characters
+- Use only printable ASCII characters (letters, numbers, symbols, spaces) plus color tags
 - Output NOTHING except the {height} lines of art. No explanation, no labels, no blank lines before or after."#,
         width = width,
         height = height,

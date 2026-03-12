@@ -1,19 +1,11 @@
-//! Canvas renderer — executes drawing commands onto a text grid.
+//! 2D cell buffer renderer for the canvas drawing language.
 
-/// A text canvas that drawing commands operate on.
+use crate::canvas_lang::parser::DrawCommand;
+
 pub struct Canvas;
 
 impl Canvas {
-    /// Creates a new canvas with the given dimensions.
-    pub fn new(_w: usize, _h: usize) -> Self {
-        Canvas
-    }
-
-    /// Executes all commands on the canvas in order.
-    pub fn execute_all(&mut self, _commands: &[()]) {}
-
-    /// Converts the canvas to a list of output lines with color tags.
-    pub fn to_lines(&self) -> Vec<String> {
-        vec![]
-    }
+    pub fn new(_w: usize, _h: usize) -> Self { Canvas }
+    pub fn execute_all(&mut self, _commands: &[DrawCommand]) {}
+    pub fn to_lines(&self) -> Vec<String> { vec![] }
 }

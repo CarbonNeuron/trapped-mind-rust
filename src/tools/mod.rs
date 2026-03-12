@@ -163,6 +163,7 @@ pub async fn stream_to_chat(
 /// Stops early once `target_lines` complete lines have been received.
 /// Lines exceeding `max_line_width` are force-wrapped with a newline.
 /// Returns the full concatenated text.
+#[allow(dead_code)]
 pub async fn stream_to_canvas(
     mut stream: crate::llm::LlmStream,
     tx: &mpsc::UnboundedSender<ToolOutput>,
@@ -196,6 +197,7 @@ pub async fn stream_to_canvas(
 }
 
 /// Counts complete lines (lines terminated by '\n').
+#[allow(dead_code)]
 fn count_complete_lines(text: &str) -> usize {
     if text.ends_with('\n') {
         text.lines().count()
@@ -206,6 +208,7 @@ fn count_complete_lines(text: &str) -> usize {
 
 /// Force-wraps any line exceeding `max_width` characters by inserting newlines.
 /// Uses char boundaries to avoid panics on multi-byte UTF-8.
+#[allow(dead_code)]
 fn force_wrap(text: &str, max_width: usize) -> String {
     let mut result = String::with_capacity(text.len() + 16);
     for (i, line) in text.split('\n').enumerate() {
@@ -227,6 +230,27 @@ fn force_wrap(text: &str, max_width: usize) -> String {
         }
     }
     result
+}
+
+/// Collects an LlmStream into a String, stopping after max_lines newlines.
+/// If max_lines is 0, collects until the stream ends.
+pub async fn collect_stream(
+    mut stream: crate::llm::LlmStream,
+    max_lines: usize,
+) -> Result<String, AppError> {
+    let mut text = String::new();
+    while let Some(result) = stream.recv().await {
+        match result {
+            Ok(token) => {
+                text.push_str(&token);
+                if max_lines > 0 && text.matches('\n').count() >= max_lines {
+                    break;
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -455,5 +479,19 @@ pub mod tests {
         assert_eq!(count_complete_lines("partial"), 0);
         assert_eq!(count_complete_lines(""), 0);
         assert_eq!(count_complete_lines("\n"), 1);
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_with_limit() {
+        let stream = mock_stream(vec!["line1\n", "line2\n", "line3\n", "line4\n"]);
+        let result = collect_stream(stream, 2).await.unwrap();
+        assert_eq!(result.matches('\n').count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_no_limit() {
+        let stream = mock_stream(vec!["a\n", "b\n"]);
+        let result = collect_stream(stream, 0).await.unwrap();
+        assert_eq!(result, "a\nb\n");
     }
 }

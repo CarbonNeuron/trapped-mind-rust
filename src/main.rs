@@ -15,7 +15,6 @@ mod pet_states;
 mod system;
 mod tools;
 mod ui;
-#[allow(dead_code)]
 mod canvas_lang;
 
 use app::{App, AppEvent, AppMode, HandleResult};

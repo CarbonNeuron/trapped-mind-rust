@@ -19,3 +19,35 @@ pub fn parse_and_render(input: &str, width: usize, height: usize) -> Option<Vec<
     canvas.execute_all(&commands);
     Some(canvas.to_lines())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_and_render_basic() {
+        let script = "FILL .\nTEXT 0,0,\"HI\"";
+        let lines = parse_and_render(script, 10, 3).unwrap();
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_and_render_empty_returns_none() {
+        assert!(parse_and_render("just some garbage", 10, 3).is_none());
+    }
+
+    #[test]
+    fn test_parse_and_render_blank_returns_none() {
+        assert!(parse_and_render("", 10, 3).is_none());
+    }
+
+    #[test]
+    fn test_parse_and_render_with_colors() {
+        let script = "FILL . #1a1a2e\nTEXT 0,0,\"HI\" #FF0000";
+        let lines = parse_and_render(script, 10, 3).unwrap();
+        assert_eq!(lines.len(), 3);
+        // Should contain hex color tags
+        let all = lines.join("");
+        assert!(all.contains("{#"));
+    }
+}

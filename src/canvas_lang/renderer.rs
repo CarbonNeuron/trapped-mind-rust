@@ -53,6 +53,7 @@ impl Canvas {
     }
 
     /// Gets a reference to the cell at (x, y), if in bounds.
+    #[allow(dead_code)]
     pub fn get(&self, x: usize, y: usize) -> Option<&Cell> {
         self.cells.get(y).and_then(|row| row.get(x))
     }

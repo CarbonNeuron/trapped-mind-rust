@@ -140,6 +140,9 @@ pub struct SystemReader {
     has_real_fan: bool,
     has_real_network: bool,
     last_tick: Instant,
+    last_temp: f32,
+    last_battery: (f32, String),
+    last_fan: u32,
 }
 
 impl SystemReader {
@@ -168,6 +171,9 @@ impl SystemReader {
             start_time: now, sim: SimState::new(),
             has_real_temp, has_real_battery, has_real_fan, has_real_network,
             last_tick: now,
+            last_temp: 50.0,
+            last_battery: (50.0, "Unknown".to_string()),
+            last_fan: 2000,
         }
     }
 
@@ -198,16 +204,34 @@ impl SystemReader {
 
         let temp = if self.has_real_temp {
             self.components.refresh(false);
-            self.components
+            let real_temp = self
+                .components
                 .iter()
                 .filter_map(|c| c.temperature())
-                .fold(0.0_f32, f32::max)
+                .fold(0.0_f32, f32::max);
+            if real_temp > 0.0 {
+                self.last_temp = real_temp;
+                real_temp
+            } else {
+                tracing::warn!("temperature sensor returned 0, using last known value");
+                self.last_temp
+            }
         } else {
             self.sim.temp_current
         };
 
         let (battery_pct, power_status) = if self.has_real_battery {
-            self.read_real_battery()
+            let result = self.read_real_battery();
+            if result.1 != "Unknown" {
+                self.last_battery = result.clone();
+            } else {
+                tracing::warn!("battery read returned Unknown, using last known value");
+            }
+            if result.1 == "Unknown" {
+                self.last_battery.clone()
+            } else {
+                result
+            }
         } else {
             (
                 self.sim.battery_percent,
@@ -216,7 +240,16 @@ impl SystemReader {
         };
 
         let fan_rpm = if self.has_real_fan {
-            Self::probe_fan_speed().unwrap_or(self.sim.fan_rpm())
+            match Self::probe_fan_speed() {
+                Some(rpm) => {
+                    self.last_fan = rpm;
+                    rpm
+                }
+                None => {
+                    tracing::warn!("fan sensor read failed, using last known value");
+                    self.last_fan
+                }
+            }
         } else {
             self.sim.fan_rpm()
         };

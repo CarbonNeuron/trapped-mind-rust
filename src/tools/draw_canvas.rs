@@ -90,7 +90,8 @@ impl Tool for DrawCanvasTool {
 
         let request = Self::build_request(subject, style, context);
         let stream = llm.stream_generate(request).await?;
-        let _full_text = stream_to_canvas(stream, &output_tx).await?;
+        let target_lines = context.canvas_dimensions.1 as usize;
+        let _full_text = stream_to_canvas(stream, &output_tx, target_lines).await?;
 
         Ok(format!("[draw_canvas] {subject}"))
     }

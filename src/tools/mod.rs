@@ -160,10 +160,12 @@ pub async fn stream_to_chat(
 }
 
 /// Consumes an LlmStream, accumulating tokens and sending canvas updates.
+/// Stops early once `target_lines` complete lines have been received.
 /// Returns the full concatenated text.
 pub async fn stream_to_canvas(
     mut stream: crate::llm::LlmStream,
     tx: &mpsc::UnboundedSender<ToolOutput>,
+    target_lines: usize,
 ) -> Result<String, AppError> {
     let mut full_text = String::new();
     while let Some(result) = stream.recv().await {
@@ -172,6 +174,17 @@ pub async fn stream_to_canvas(
                 full_text.push_str(&token);
                 if tx.send(ToolOutput::CanvasContent(full_text.clone())).is_err() {
                     break;
+                }
+                // Stop once we have enough complete lines
+                if target_lines > 0 {
+                    let complete = if full_text.ends_with('\n') {
+                        full_text.lines().count()
+                    } else {
+                        full_text.lines().count().saturating_sub(1)
+                    };
+                    if complete >= target_lines {
+                        break;
+                    }
                 }
             }
             Err(e) => return Err(e),
@@ -267,5 +280,84 @@ pub mod tests {
         assert!(text.contains("CPU:"));
         assert!(!text.contains("Temperature:"));
         assert!(text.contains("Battery:"));
+    }
+
+    /// Helper: create an LlmStream from a vec of tokens.
+    fn mock_stream(tokens: Vec<&str>) -> crate::llm::LlmStream {
+        let (tx, rx) = mpsc::unbounded_channel();
+        for t in tokens {
+            tx.send(Ok(t.to_string())).unwrap();
+        }
+        drop(tx); // signal completion
+        rx
+    }
+
+    #[tokio::test]
+    async fn test_stream_to_chat_concatenates() {
+        let stream = mock_stream(vec!["hello ", "world"]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let result = stream_to_chat(stream, &tx).await.unwrap();
+        assert_eq!(result, "hello world");
+        // Verify tokens were forwarded
+        let mut tokens = Vec::new();
+        while let Ok(output) = rx.try_recv() {
+            if let ToolOutput::ChatToken(t) = output {
+                tokens.push(t);
+            }
+        }
+        assert_eq!(tokens, vec!["hello ", "world"]);
+    }
+
+    #[tokio::test]
+    async fn test_stream_to_canvas_stops_at_target_lines() {
+        // Send 10 lines but target is 3
+        let mut lines = String::new();
+        for i in 1..=10 {
+            lines.push_str(&format!("line {}\n", i));
+        }
+        // Simulate token-by-token (one char at a time would be too slow, send line by line)
+        let tokens: Vec<&str> = lines.split_inclusive('\n').collect();
+        let stream = mock_stream(tokens);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let result = stream_to_canvas(stream, &tx, 3).await.unwrap();
+        // Should have stopped after 3 complete lines
+        let line_count = result.lines().count();
+        assert!(line_count >= 3, "expected at least 3 lines, got {}", line_count);
+        assert!(line_count <= 4, "expected at most 4 lines (3 + partial), got {}", line_count);
+    }
+
+    #[tokio::test]
+    async fn test_stream_to_canvas_zero_target_no_cutoff() {
+        let stream = mock_stream(vec!["line1\n", "line2\n", "line3\n"]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let result = stream_to_canvas(stream, &tx, 0).await.unwrap();
+        assert_eq!(result.lines().count(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_stream_to_canvas_partial_lines_not_counted() {
+        // "line1\npartial" — only 1 complete line, partial not counted
+        let stream = mock_stream(vec!["line1\n", "partial"]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let result = stream_to_canvas(stream, &tx, 3).await.unwrap();
+        // Should NOT stop early — only 1 complete line, target is 3
+        assert_eq!(result, "line1\npartial");
+    }
+
+    #[tokio::test]
+    async fn test_stream_to_canvas_sends_content_events() {
+        let stream = mock_stream(vec!["a\n", "b\n"]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _result = stream_to_canvas(stream, &tx, 5).await.unwrap();
+        let mut events = Vec::new();
+        while let Ok(output) = rx.try_recv() {
+            if let ToolOutput::CanvasContent(c) = output {
+                events.push(c);
+            }
+        }
+        // Each event should be the full accumulated buffer
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], "a\n");
+        assert_eq!(events[1], "a\nb\n");
     }
 }

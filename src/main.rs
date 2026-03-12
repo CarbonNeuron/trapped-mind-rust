@@ -105,6 +105,27 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Graceful shutdown on Ctrl+C
+    let tx_ctrlc = tx.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = tx_ctrlc.send(AppEvent::Shutdown);
+        }
+    });
+
+    // Graceful shutdown on SIGTERM (Unix only)
+    #[cfg(unix)]
+    {
+        let tx_sigterm = tx.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            if let Ok(mut sig) = signal(SignalKind::terminate()) {
+                sig.recv().await;
+                let _ = tx_sigterm.send(AppEvent::Shutdown);
+            }
+        });
+    }
+
     let llm: Arc<dyn LlmClient> = Arc::new(ollama::OllamaClient::new(
         &config.ollama_host,
         config.ollama_port,
@@ -155,6 +176,12 @@ async fn run_app(
             }
             Some(AppEvent::AnimationTick) => {
                 app.pet_frame_index = app.pet_frame_index.wrapping_add(1);
+            }
+            Some(AppEvent::Shutdown) => {
+                tracing::info!("shutdown signal received");
+                app.log_shutdown();
+                app.config.save();
+                break;
             }
             None => break,
         }

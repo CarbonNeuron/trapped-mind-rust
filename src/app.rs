@@ -106,6 +106,8 @@ pub enum AppEvent {
     GenerationError(String),
     /// The pet animation timer fired.
     AnimationTick,
+    /// Graceful shutdown requested (Ctrl+C / SIGTERM).
+    Shutdown,
 }
 
 /// What action the caller should take after [`App::submit_input`] or

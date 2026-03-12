@@ -217,6 +217,7 @@ pub enum Command {
     Model(String),
     Stats,
     Think,
+    Canvas,
     Config,
     Quit,
     /// A plain text message (not a command).
@@ -237,6 +238,8 @@ pub fn parse_input(input: &str) -> Command {
         Command::Stats
     } else if trimmed.eq_ignore_ascii_case("/think") {
         Command::Think
+    } else if trimmed.eq_ignore_ascii_case("/canvas") {
+        Command::Canvas
     } else if trimmed.eq_ignore_ascii_case("/config") {
         Command::Config
     } else if trimmed.eq_ignore_ascii_case("/quit") || trimmed.eq_ignore_ascii_case("/exit") {

@@ -18,12 +18,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     app.canvas_height = inner_height;
 
     let color = if app.canvas_generating {
-        Color::DarkGray
+        Color::White
     } else {
         Color::Cyan
     };
 
-    let lines: Vec<Line> = if app.canvas_lines.is_empty() {
+    let lines: Vec<Line> = if app.canvas_lines.is_empty() && !app.canvas_generating {
         // Show a placeholder when no canvas has been generated yet
         let mut placeholder = Vec::new();
         let msg = "awaiting vision...";
@@ -45,7 +45,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let title = if app.canvas_generating {
-        " canvas (generating...) "
+        " canvas ~ "
     } else {
         " canvas "
     };

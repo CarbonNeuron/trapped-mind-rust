@@ -126,6 +126,8 @@ pub enum HandleResult {
     RunUpdate,
     /// Trigger an autonomous thought immediately.
     ForceThink,
+    /// Regenerate the canvas art.
+    RegenCanvas,
 }
 
 /// A single message displayed in the chat panel.
@@ -353,7 +355,7 @@ impl App {
             }
             Command::Help => {
                 self.add_system_message(
-                    "Commands:\n  /help   - Show this help\n  /clear  - Clear memory\n  /model <name> - Switch model\n  /stats  - Show system info\n  /think  - Force a thought now\n  /config - Open config menu\n  /update - Pull & rebuild\n  /quit   - Exit\n  /exit   - Exit".to_string(),
+                    "Commands:\n  /help   - Show this help\n  /clear  - Clear memory\n  /model <name> - Switch model\n  /stats  - Show system info\n  /think  - Force a thought now\n  /canvas - Regenerate canvas art\n  /config - Open config menu\n  /update - Pull & rebuild\n  /quit   - Exit\n  /exit   - Exit".to_string(),
                 );
                 HandleResult::Nothing
             }
@@ -388,6 +390,9 @@ impl App {
             }
             Command::Think => {
                 HandleResult::ForceThink
+            }
+            Command::Canvas => {
+                HandleResult::RegenCanvas
             }
             Command::Config => {
                 self.enter_config_mode();

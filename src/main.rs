@@ -180,12 +180,13 @@ async fn run_app(
                 app.pet_frame_index = app.pet_frame_index.wrapping_add(1);
             }
             Some(AppEvent::CanvasToken(token)) => {
+                // Stream canvas live: accumulate in buffer, split into lines for display
                 app.canvas_buffer.push_str(&token);
+                app.canvas_lines = app.canvas_buffer.lines().map(String::from).collect();
             }
             Some(AppEvent::CanvasDone) => {
-                // Split buffer into lines, trim to canvas dimensions
-                let lines: Vec<String> = app.canvas_buffer.lines().map(String::from).collect();
-                app.canvas_lines = lines;
+                // Finalize: ensure lines are from the final buffer state
+                app.canvas_lines = app.canvas_buffer.lines().map(String::from).collect();
                 app.canvas_buffer.clear();
                 app.canvas_generating = false;
             }
@@ -234,6 +235,9 @@ fn handle_key(
                 }
                 HandleResult::ForceThink => {
                     spawn_generation(llm, app, tx, None);
+                }
+                HandleResult::RegenCanvas => {
+                    spawn_canvas_generation(llm, app, tx);
                 }
                 _ => {}
             }
@@ -451,6 +455,7 @@ fn spawn_canvas_generation(
 
     app.canvas_generating = true;
     app.canvas_buffer.clear();
+    app.canvas_lines.clear();
 
     let llm = Arc::clone(llm);
     let tx = tx.clone();

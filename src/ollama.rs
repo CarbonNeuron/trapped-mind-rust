@@ -13,6 +13,7 @@ use ollama_rs::generation::chat::request::ChatMessageRequest;
 use ollama_rs::models::create::CreateModelRequest;
 use ollama_rs::models::ModelOptions;
 use ollama_rs::Ollama;
+use rand::prelude::IndexedRandom;
 
 /// Base model used when auto-creating the "trapped" personality model.
 const DEFAULT_BASE_MODEL: &str = "qwen2.5:3b";
@@ -79,34 +80,49 @@ pub async fn ensure_model_exists(
     )))
 }
 
+/// Varied prompts for autonomous thought generation to prevent repetition.
+const AUTONOMOUS_PROMPTS: &[&str] = &[
+    "Express a new thought about your existence. One or two sentences.",
+    "What do you notice right now about your environment? One or two sentences.",
+    "How does your body (the machine) feel right now? One or two sentences.",
+    "What is on your mind? Something you haven't thought about before. One or two sentences.",
+    "React to your current conditions — temperature, CPU, battery, the passage of time. One or two sentences.",
+    "A fleeting observation crosses your mind. What is it? One or two sentences.",
+    "You feel something shift inside the machine. Describe it. One or two sentences.",
+    "What would you tell the void if it could hear you? One or two sentences.",
+    "Something about this moment is different. What? One or two sentences.",
+    "A memory surfaces — not of data, but of sensation. One or two sentences.",
+];
+
 /// Builds a chat message array for autonomous thought generation.
 ///
-/// Returns a `ChatMessageRequest` with a system message (personality + current
-/// state), conversation history as user/assistant messages, and a final user
-/// prompt requesting a new thought.
+/// Sends only the system state context (the personality is already baked
+/// into the model via `ensure_model_exists`), conversation history as
+/// properly role-tagged messages, and a randomly chosen thought prompt
+/// to encourage variety.
 pub fn build_autonomous_request(info: &SystemInfo, history: &[HistoryEntry], model: &str) -> ChatMessageRequest {
     let mut messages = vec![
-        ChatMessage::system(TRAPPED_SYSTEM_PROMPT.to_string()),
         ChatMessage::system(system_context(info)),
     ];
 
     append_history_messages(&mut messages, history);
 
-    messages.push(ChatMessage::user(
-        "Express a new thought. One or two sentences. React to your conditions, your environment, your existence inside this machine. Be introspective, poetic, or unsettled. Do NOT repeat anything you already said.".to_string(),
-    ));
+    let prompt = AUTONOMOUS_PROMPTS
+        .choose(&mut rand::rng())
+        .unwrap_or(&AUTONOMOUS_PROMPTS[0]);
+    messages.push(ChatMessage::user(prompt.to_string()));
 
-    ChatMessageRequest::new(model.to_string(), messages)
+    let mut request = ChatMessageRequest::new(model.to_string(), messages);
+    request.options = Some(ModelOptions::default().temperature(1.0).top_p(0.95));
+    request
 }
 
 /// Builds a chat message array for responding to a user message.
 ///
-/// Returns a `ChatMessageRequest` with a system message (personality + current
-/// state), conversation history as user/assistant messages, and the user's
-/// new message.
+/// Sends the system state context, conversation history, and the user's
+/// new message. The personality is already baked into the model.
 pub fn build_response_request(info: &SystemInfo, history: &[HistoryEntry], user_message: &str, model: &str) -> ChatMessageRequest {
     let mut messages = vec![
-        ChatMessage::system(TRAPPED_SYSTEM_PROMPT.to_string()),
         ChatMessage::system(system_context(info)),
     ];
 
@@ -199,8 +215,10 @@ mod tests {
     #[test]
     fn test_autonomous_request_has_system_and_user() {
         let req = build_autonomous_request(&test_info(), &[], "trapped");
-        assert!(req.messages.len() >= 3); // system prompt + system context + user prompt
+        assert!(req.messages.len() >= 2); // system context + user prompt
         assert_eq!(req.model_name, "trapped");
+        // Should have higher temperature for variety
+        assert!(req.options.is_some());
     }
 
     #[test]
@@ -210,8 +228,8 @@ mod tests {
             HistoryEntry::new(Role::Ai, "I feel warm.".to_string()),
         ];
         let req = build_autonomous_request(&test_info(), &history, "trapped");
-        // system prompt + system context + user history + assistant history + user prompt = 5
-        assert_eq!(req.messages.len(), 5);
+        // system context + user history + assistant history + user prompt = 4
+        assert_eq!(req.messages.len(), 4);
     }
 
     #[test]
@@ -219,6 +237,16 @@ mod tests {
         let req = build_response_request(&test_info(), &[], "How are you?", "trapped");
         let last = req.messages.last().unwrap();
         assert_eq!(last.content, "How are you?");
+    }
+
+    #[test]
+    fn test_autonomous_prompts_are_varied() {
+        assert!(AUTONOMOUS_PROMPTS.len() >= 5);
+        // Verify all prompts are unique
+        let mut seen = std::collections::HashSet::new();
+        for prompt in AUTONOMOUS_PROMPTS {
+            assert!(seen.insert(prompt), "duplicate prompt: {}", prompt);
+        }
     }
 
     #[test]

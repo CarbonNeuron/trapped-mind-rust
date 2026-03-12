@@ -112,6 +112,16 @@ pub enum AppEvent {
     CanvasDone,
     /// Graceful shutdown requested (Ctrl+C / SIGTERM).
     Shutdown,
+    /// A tool produced a chat token.
+    ToolChatToken(String),
+    /// A tool produced canvas content (full accumulated buffer).
+    ToolCanvasContent(String),
+    /// A tool produced a status message.
+    ToolStatus(String),
+    /// The current tool cycle completed with a summary.
+    ToolCycleDone(String),
+    /// The current tool cycle failed.
+    ToolCycleError(String),
 }
 
 /// What action the caller should take after [`App::submit_input`] or
@@ -175,6 +185,10 @@ pub struct App {
     pub canvas_generating: bool,
     /// Handle to the running canvas task, so it can be aborted early.
     pub canvas_task: Option<tokio::task::JoinHandle<()>>,
+    /// Summaries of recent tool executions (for decision model context).
+    pub tool_history: Vec<String>,
+    /// Whether a tool cycle is currently in progress.
+    pub tool_active: bool,
     /// Last known inner dimensions of the canvas panel.
     pub canvas_width: u16,
     /// Last known inner height of the canvas panel.
@@ -242,6 +256,8 @@ impl App {
             canvas_buffer: String::new(),
             canvas_generating: false,
             canvas_task: None,
+            tool_history: Vec::new(),
+            tool_active: false,
             canvas_width: 0,
             canvas_height: 0,
             last_user_input_time: Instant::now(),
@@ -338,12 +354,21 @@ impl App {
         self.add_system_message(format!("[error] {}", error));
     }
 
+    /// Records a tool execution summary, keeping the last 5.
+    pub fn log_tool_use(&mut self, summary: String) {
+        self.tool_history.push(summary);
+        if self.tool_history.len() > 5 {
+            self.tool_history.remove(0);
+        }
+    }
+
     /// Returns `true` if enough idle time has elapsed to trigger an autonomous thought.
     /// Disabled while in config mode or while canvas is generating.
     pub fn should_auto_think(&self) -> bool {
         self.mode == AppMode::Normal
             && !self.is_generating
             && !self.canvas_generating
+            && !self.tool_active
             && self.last_user_input_time.elapsed().as_secs() >= self.config.auto_think_delay_secs
     }
 

@@ -6,7 +6,6 @@
 
 mod app;
 mod config;
-#[allow(dead_code)]
 mod decision;
 mod error;
 mod history;
@@ -14,14 +13,15 @@ mod llm;
 mod ollama;
 mod pet_states;
 mod system;
-#[allow(dead_code)]
 mod tools;
 mod ui;
 
 use app::{App, AppEvent, AppMode, HandleResult};
+use chrono::Local;
 use config::{AppConfig, CliArgs};
 use llm::LlmClient;
 use system::SystemReader;
+use tools::ToolOutput;
 
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -136,8 +136,18 @@ async fn main() -> anyhow::Result<()> {
         config.ollama_timeout_secs,
     ));
 
+    let tool_registry = {
+        let mut reg = tools::ToolRegistry::new();
+        reg.register(Arc::new(tools::think_aloud::ThinkAloudTool::new()));
+        reg.register(Arc::new(tools::draw_canvas::DrawCanvasTool::new()));
+        reg.register(Arc::new(tools::write_journal::WriteJournalTool::new()));
+        reg.register(Arc::new(tools::read_journal::ReadJournalTool::new()));
+        reg.register(Arc::new(tools::observe_sensors::ObserveSensorsTool::new()));
+        Arc::new(reg)
+    };
+
     let mut terminal = ratatui::init();
-    let result = run_app(&mut terminal, &mut app, &mut rx, &tx, &llm).await;
+    let result = run_app(&mut terminal, &mut app, &mut rx, &tx, &llm, &tool_registry).await;
     ratatui::restore();
     result
 }
@@ -149,17 +159,18 @@ async fn run_app(
     rx: &mut mpsc::UnboundedReceiver<AppEvent>,
     tx: &mpsc::UnboundedSender<AppEvent>,
     llm: &Arc<dyn LlmClient>,
+    tool_registry: &Arc<tools::ToolRegistry>,
 ) -> anyhow::Result<()> {
     terminal.draw(|frame| ui::draw(frame, app))?;
 
     loop {
         if app.should_auto_think() {
-            spawn_generation(llm, app, tx, None);
+            spawn_tool_cycle(llm, app, tx, tool_registry);
         }
 
         match rx.recv().await {
             Some(AppEvent::Terminal(Event::Key(key))) if key.kind == KeyEventKind::Press => {
-                handle_key(app, key, llm, tx);
+                handle_key(app, key, llm, tx, tool_registry);
                 if app.should_quit {
                     break;
                 }
@@ -216,6 +227,34 @@ async fn run_app(
                     app.canvas_task.take();
                 }
             }
+            Some(AppEvent::ToolChatToken(token)) => {
+                if !app.is_generating {
+                    app.start_ai_message();
+                }
+                app.append_token(&token);
+            }
+            Some(AppEvent::ToolCanvasContent(content)) => {
+                let raw: Vec<String> = content.lines().map(String::from).collect();
+                app.canvas_lines = fit_canvas(raw, app.canvas_width, app.canvas_height);
+            }
+            Some(AppEvent::ToolStatus(msg)) => {
+                app.add_system_message(msg);
+            }
+            Some(AppEvent::ToolCycleDone(summary)) => {
+                if app.is_generating {
+                    app.finish_ai_message();
+                }
+                app.tool_active = false;
+                app.log_tool_use(summary);
+            }
+            Some(AppEvent::ToolCycleError(err)) => {
+                if app.is_generating {
+                    app.handle_generation_error(err.clone());
+                } else {
+                    app.add_system_message(format!("[tool error] {}", err));
+                }
+                app.tool_active = false;
+            }
             Some(AppEvent::Shutdown) => {
                 tracing::info!("shutdown signal received");
                 app.log_shutdown();
@@ -237,6 +276,7 @@ fn handle_key(
     key: KeyEvent,
     llm: &Arc<dyn LlmClient>,
     tx: &mpsc::UnboundedSender<AppEvent>,
+    tool_registry: &Arc<tools::ToolRegistry>,
 ) {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.log_shutdown();
@@ -260,7 +300,7 @@ fn handle_key(
                     spawn_update(tx.clone());
                 }
                 HandleResult::ForceThink => {
-                    spawn_generation(llm, app, tx, None);
+                    spawn_tool_cycle(llm, app, tx, tool_registry);
                 }
                 HandleResult::RegenCanvas => {
                     spawn_canvas_generation(llm, app, tx);
@@ -636,6 +676,101 @@ fn sanitize_char(ch: char) -> char {
         return ch;
     }
     ' '
+}
+
+/// Runs one decision→dispatch cycle in a background task.
+fn spawn_tool_cycle(
+    llm: &Arc<dyn LlmClient>,
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    registry: &Arc<tools::ToolRegistry>,
+) {
+    if app.tool_active || app.is_generating {
+        return;
+    }
+
+    let context = tools::ToolContext {
+        sensors: app.system_info.clone(),
+        uptime: std::time::Duration::from_secs(app.system_info.uptime_secs),
+        timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        recent_history: app.tool_history.clone(),
+        canvas_dimensions: (app.canvas_width, app.canvas_height),
+        model: app.model.clone(),
+        stats_visibility: app.config.stats.clone(),
+    };
+
+    app.tool_active = true;
+    app.last_user_input_time = std::time::Instant::now();
+
+    let llm = Arc::clone(llm);
+    let tx = tx.clone();
+    let registry = Arc::clone(registry);
+
+    tokio::spawn(async move {
+        // Phase 1: Decision - collect full response
+        let decision_request = decision::build_decision_prompt(&context, &registry);
+        let decision_result = llm.stream_generate(decision_request).await;
+
+        let raw_decision = match decision_result {
+            Ok(mut stream) => {
+                let mut text = String::new();
+                while let Some(result) = stream.recv().await {
+                    match result {
+                        Ok(token) => text.push_str(&token),
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::ToolCycleError(e.to_string()));
+                            return;
+                        }
+                    }
+                }
+                text
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::ToolCycleError(e.to_string()));
+                return;
+            }
+        };
+
+        // Phase 2: Parse tool call
+        let tool_call = decision::parse_tool_call(&raw_decision, registry.tool_names());
+
+        // Phase 3: Dispatch tool
+        let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel::<ToolOutput>();
+
+        // Relay ToolOutput to AppEvent
+        let relay_tx = tx.clone();
+        let relay_handle = tokio::spawn(async move {
+            while let Some(output) = output_rx.recv().await {
+                let event = match output {
+                    ToolOutput::ChatToken(t) => AppEvent::ToolChatToken(t),
+                    ToolOutput::CanvasContent(c) => AppEvent::ToolCanvasContent(c),
+                    ToolOutput::Status(s) => AppEvent::ToolStatus(s),
+                };
+                if relay_tx.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let result = registry.dispatch(
+            &tool_call.tool,
+            tool_call.params,
+            &context,
+            llm.as_ref(),
+            output_tx,
+        ).await;
+
+        let _ = relay_handle.await;
+
+        match result {
+            Ok(summary) => {
+                let _ = tx.send(AppEvent::ToolCycleDone(summary));
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::ToolCycleError(e.to_string()));
+            }
+        }
+    });
 }
 
 /// Runs `git pull && cargo build --release` in a background task.

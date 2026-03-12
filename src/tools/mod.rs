@@ -106,6 +106,7 @@ impl ToolRegistry {
         &self.order
     }
 
+    #[allow(dead_code)]
     pub fn get(&self, name: &str) -> Option<&Arc<dyn Tool>> {
         self.tools.get(name)
     }

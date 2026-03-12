@@ -43,7 +43,6 @@ pub struct ChatRequest {
 /// A stream of tokens from an LLM generation.
 /// Receives `Ok(token)` for each token, then the sender is dropped on completion.
 /// Receives `Err(AppError)` if generation fails.
-#[allow(dead_code)]
 pub type LlmStream = mpsc::UnboundedReceiver<Result<String, AppError>>;
 
 /// Trait for LLM backends that support streaming chat.
@@ -60,7 +59,6 @@ pub trait LlmClient: Send + Sync {
     /// Streams a chat completion, returning a token receiver.
     /// Each token arrives as Ok(String). Sender is dropped on completion.
     /// Errors arrive as Err(AppError).
-    #[allow(dead_code)]
     async fn stream_generate(&self, request: ChatRequest) -> Result<LlmStream, AppError>;
 
     /// Pulls/downloads a model by name.

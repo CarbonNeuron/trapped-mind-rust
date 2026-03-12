@@ -180,15 +180,32 @@ async fn run_app(
                 app.pet_frame_index = app.pet_frame_index.wrapping_add(1);
             }
             Some(AppEvent::CanvasToken(token)) => {
-                app.canvas_buffer.push_str(&token);
-                let raw: Vec<String> = app.canvas_buffer.lines().map(String::from).collect();
-                app.canvas_lines = fit_canvas(raw, app.canvas_width, app.canvas_height);
+                if app.canvas_generating {
+                    app.canvas_buffer.push_str(&token);
+                    let raw: Vec<String> = app.canvas_buffer.lines().map(String::from).collect();
+                    let target_h = app.canvas_height as usize;
+                    // Check if buffer ends with a newline (meaning current line is complete)
+                    let have_complete_lines = app.canvas_buffer.ends_with('\n');
+                    let complete_line_count = if have_complete_lines {
+                        raw.len()
+                    } else {
+                        raw.len().saturating_sub(1)
+                    };
+                    app.canvas_lines = fit_canvas(raw, app.canvas_width, app.canvas_height);
+                    // Cut off early once we have enough complete lines
+                    if complete_line_count >= target_h {
+                        app.canvas_buffer.clear();
+                        app.canvas_generating = false;
+                    }
+                }
             }
             Some(AppEvent::CanvasDone) => {
-                let raw: Vec<String> = app.canvas_buffer.lines().map(String::from).collect();
-                app.canvas_lines = fit_canvas(raw, app.canvas_width, app.canvas_height);
-                app.canvas_buffer.clear();
-                app.canvas_generating = false;
+                if app.canvas_generating {
+                    let raw: Vec<String> = app.canvas_buffer.lines().map(String::from).collect();
+                    app.canvas_lines = fit_canvas(raw, app.canvas_width, app.canvas_height);
+                    app.canvas_buffer.clear();
+                    app.canvas_generating = false;
+                }
             }
             Some(AppEvent::Shutdown) => {
                 tracing::info!("shutdown signal received");
@@ -323,7 +340,7 @@ fn spawn_generation(
     tx: &mpsc::UnboundedSender<AppEvent>,
     user_message: Option<String>,
 ) {
-    if app.is_generating {
+    if app.is_generating || app.canvas_generating {
         return;
     }
 

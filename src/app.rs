@@ -336,10 +336,11 @@ impl App {
     }
 
     /// Returns `true` if enough idle time has elapsed to trigger an autonomous thought.
-    /// Disabled while in config mode.
+    /// Disabled while in config mode or while canvas is generating.
     pub fn should_auto_think(&self) -> bool {
         self.mode == AppMode::Normal
             && !self.is_generating
+            && !self.canvas_generating
             && self.last_user_input_time.elapsed().as_secs() >= self.config.auto_think_delay_secs
     }
 

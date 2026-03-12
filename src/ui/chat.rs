@@ -120,7 +120,22 @@ fn render_ai_message(
                 .add_modifier(Modifier::SLOW_BLINK),
         )));
     } else {
-        wrap_indented(lines, &msg.text, "  ", inner_width, text_style);
+        // Split thinking (decision model output) from tool output at "\n\n"
+        let thinking_style = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC);
+        if let Some(sep) = msg.text.find("\n\n") {
+            let thinking = &msg.text[..sep];
+            let output = msg.text[sep..].trim_start_matches('\n');
+            if !thinking.is_empty() {
+                wrap_indented(lines, thinking, "  ", inner_width, thinking_style);
+            }
+            if !output.is_empty() {
+                wrap_indented(lines, output, "  ", inner_width, text_style);
+            }
+        } else {
+            wrap_indented(lines, &msg.text, "  ", inner_width, text_style);
+        }
     }
 
     lines.push(Line::from(""));

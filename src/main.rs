@@ -172,6 +172,9 @@ fn handle_key(
                 HandleResult::EnsureModel(model_name) => {
                     spawn_ensure_model(ollama, &model_name, tx.clone());
                 }
+                HandleResult::ForceThink => {
+                    spawn_generation(ollama, app, tx, None);
+                }
                 _ => {}
             }
         }

@@ -166,6 +166,7 @@ pub enum Command {
     Update,
     Model(String),
     Stats,
+    Think,
     Quit,
     /// A plain text message (not a command).
     Message(String),
@@ -183,6 +184,8 @@ pub fn parse_input(input: &str) -> Command {
         Command::Update
     } else if trimmed.eq_ignore_ascii_case("/stats") {
         Command::Stats
+    } else if trimmed.eq_ignore_ascii_case("/think") {
+        Command::Think
     } else if trimmed.eq_ignore_ascii_case("/quit") || trimmed.eq_ignore_ascii_case("/exit") {
         Command::Quit
     } else if let Some(model_name) = trimmed.strip_prefix("/model ") {
@@ -256,6 +259,8 @@ mod tests {
         assert_eq!(parse_input("/clear"), Command::Clear);
         assert_eq!(parse_input("/update"), Command::Update);
         assert_eq!(parse_input("/stats"), Command::Stats);
+        assert_eq!(parse_input("/think"), Command::Think);
+        assert_eq!(parse_input("/THINK"), Command::Think);
         assert_eq!(parse_input("/quit"), Command::Quit);
         assert_eq!(parse_input("/exit"), Command::Quit);
         assert_eq!(parse_input("/EXIT"), Command::Quit);

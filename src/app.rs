@@ -40,6 +40,8 @@ pub enum HandleResult {
     RunUpdate,
     /// Ensure the named model exists in Ollama (creating it if needed).
     EnsureModel(String),
+    /// Trigger an autonomous thought immediately.
+    ForceThink,
 }
 
 /// A single message displayed in the chat panel.
@@ -208,7 +210,7 @@ impl App {
             }
             Command::Help => {
                 self.add_system_message(
-                    "Commands:\n  /help   - Show this help\n  /clear  - Clear memory\n  /model <name> - Switch model\n  /stats  - Show system info\n  /update - Pull & rebuild\n  /quit   - Exit\n  /exit   - Exit".to_string(),
+                    "Commands:\n  /help   - Show this help\n  /clear  - Clear memory\n  /model <name> - Switch model\n  /stats  - Show system info\n  /think  - Force a thought now\n  /update - Pull & rebuild\n  /quit   - Exit\n  /exit   - Exit".to_string(),
                 );
                 HandleResult::Nothing
             }
@@ -240,6 +242,9 @@ impl App {
                     self.add_system_message(format!("Switching to model: {}", name));
                     HandleResult::EnsureModel(name)
                 }
+            }
+            Command::Think => {
+                HandleResult::ForceThink
             }
             Command::Update => {
                 self.add_system_message("Running update...".to_string());

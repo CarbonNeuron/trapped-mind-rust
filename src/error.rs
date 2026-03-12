@@ -21,6 +21,11 @@ pub enum AppError {
     #[error("system error: {0}")]
     System(String),
 
+    /// Tool execution failure.
+    #[allow(dead_code)]
+    #[error("tool error: {0}")]
+    Tool(String),
+
     /// Generic I/O error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

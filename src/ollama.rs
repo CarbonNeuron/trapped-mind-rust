@@ -12,7 +12,7 @@ use crate::app::AppEvent;
 use crate::config::StatsVisibility;
 use crate::error::AppError;
 use crate::history::HistoryEntry;
-use crate::llm::{ChatMessage, ChatRequest, ChatRole, GenerationOptions, LlmClient};
+use crate::llm::{ChatMessage, ChatRequest, ChatRole, GenerationOptions, LlmClient, LlmStream};
 use crate::system::SystemInfo;
 
 use async_trait::async_trait;
@@ -397,6 +397,82 @@ impl LlmClient for OllamaClient {
         }
 
         Err(last_err.unwrap_or_else(|| AppError::Llm("max retries exceeded".to_string())))
+    }
+
+    async fn stream_generate(&self, request: ChatRequest) -> Result<LlmStream, AppError> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let ollama_request = Self::to_ollama_request(&request);
+        let client = self.client.clone();
+        let timeout_secs = self.timeout_secs;
+
+        tokio::spawn(async move {
+            let mut last_err = None;
+
+            for attempt in 0..3u32 {
+                if attempt > 0 {
+                    let backoff = Duration::from_secs(1 << attempt);
+                    tracing::warn!(
+                        "retrying LLM stream_generate (attempt {}), backoff {:?}",
+                        attempt + 1,
+                        backoff
+                    );
+                    tokio::time::sleep(backoff).await;
+                }
+
+                let stream_result = tokio::time::timeout(
+                    Duration::from_secs(timeout_secs),
+                    client.send_chat_messages_stream(ollama_request.clone()),
+                )
+                .await;
+
+                match stream_result {
+                    Err(_) => {
+                        last_err = Some("request timed out".to_string());
+                        continue;
+                    }
+                    Ok(Err(e)) => {
+                        let msg = e.to_string();
+                        if msg.contains("connection")
+                            || msg.contains("Connection")
+                            || msg.contains("refused")
+                            || msg.contains("timed out")
+                        {
+                            last_err = Some(msg);
+                            continue;
+                        }
+                        let _ = tx.send(Err(AppError::Llm(msg)));
+                        return;
+                    }
+                    Ok(Ok(mut stream)) => {
+                        while let Some(res) = stream.next().await {
+                            match res {
+                                Ok(resp) => {
+                                    if !resp.message.content.is_empty()
+                                        && tx.send(Ok(resp.message.content)).is_err()
+                                    {
+                                        return;
+                                    }
+                                    if resp.done {
+                                        return;
+                                    }
+                                }
+                                Err(_) => {
+                                    let _ =
+                                        tx.send(Err(AppError::Llm("stream error".to_string())));
+                                    return;
+                                }
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+
+            let msg = last_err.unwrap_or_else(|| "max retries exceeded".to_string());
+            let _ = tx.send(Err(AppError::Llm(msg)));
+        });
+
+        Ok(rx)
     }
 
     async fn pull_model(&self, model: &str) -> Result<(), AppError> {

@@ -680,10 +680,8 @@ fn spawn_tool_cycle(
     };
 
     app.tool_active = true;
-    app.tool_turn += 1;
     app.last_user_input_time = std::time::Instant::now();
 
-    let turn = app.tool_turn;
     let llm = Arc::clone(llm);
     let tx = tx.clone();
     let registry = Arc::clone(registry);
@@ -695,10 +693,6 @@ fn spawn_tool_cycle(
 
         let raw_decision = match decision_result {
             Ok(mut stream) => {
-                // Turn indicator + "Thinking:" in the same message
-                let _ = tx.send(AppEvent::ToolChatToken(
-                    format!("── Turn {} ──\n", turn),
-                ));
                 let mut text = String::new();
                 while let Some(result) = stream.recv().await {
                     match result {

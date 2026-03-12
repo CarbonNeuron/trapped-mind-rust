@@ -2,13 +2,13 @@
 
 /// Errors that can occur in the TrappedMind application.
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
 pub enum AppError {
     /// Configuration loading or validation failure.
     #[error("config error: {0}")]
     Config(String),
 
     /// Conversation history I/O failure.
+    #[allow(dead_code)]
     #[error("history error: {0}")]
     History(String),
 
@@ -17,6 +17,7 @@ pub enum AppError {
     Llm(String),
 
     /// System sensor read failure.
+    #[allow(dead_code)]
     #[error("system error: {0}")]
     System(String),
 

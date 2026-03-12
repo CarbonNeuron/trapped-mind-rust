@@ -204,24 +204,25 @@ fn count_complete_lines(text: &str) -> usize {
     }
 }
 
-/// Force-wraps any line exceeding `max_width` by inserting newlines.
+/// Force-wraps any line exceeding `max_width` characters by inserting newlines.
+/// Uses char boundaries to avoid panics on multi-byte UTF-8.
 fn force_wrap(text: &str, max_width: usize) -> String {
     let mut result = String::with_capacity(text.len() + 16);
     for (i, line) in text.split('\n').enumerate() {
         if i > 0 {
             result.push('\n');
         }
-        if line.len() <= max_width {
+        if line.chars().count() <= max_width {
             result.push_str(line);
         } else {
-            let mut pos = 0;
-            while pos < line.len() {
-                if pos > 0 {
+            let mut chars = line.chars().peekable();
+            let mut col = 0;
+            while chars.peek().is_some() {
+                if col > 0 && col % max_width == 0 {
                     result.push('\n');
                 }
-                let end = (pos + max_width).min(line.len());
-                result.push_str(&line[pos..end]);
-                pos = end;
+                result.push(chars.next().unwrap());
+                col += 1;
             }
         }
     }
@@ -429,6 +430,22 @@ pub mod tests {
             force_wrap("short\nabcdefghijklmno\nok", 5),
             "short\nabcde\nfghij\nklmno\nok"
         );
+    }
+
+    #[test]
+    fn test_force_wrap_multibyte_no_panic() {
+        // Full-width slashes (3 bytes each) — the exact crash case
+        let input = "／／／／／／／／／／";  // 10 full-width chars
+        let result = force_wrap(input, 4);
+        // Should wrap at 4 chars, not panic on byte boundary
+        assert_eq!(result.lines().count(), 3); // 4 + 4 + 2
+    }
+
+    #[test]
+    fn test_force_wrap_emoji() {
+        let input = "😀😀😀😀😀😀";  // 6 emoji, 4 bytes each
+        let result = force_wrap(input, 3);
+        assert_eq!(result, "😀😀😀\n😀😀😀");
     }
 
     #[test]

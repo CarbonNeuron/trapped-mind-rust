@@ -2,13 +2,15 @@
 //!
 //! Layout: chat (left 70%), pet face (top-right 30%), system stats
 //! (bottom-right 30%), and input bar (full-width bottom).
+//! When in config mode, an overlay is drawn on top of the normal UI.
 
 pub mod chat;
+pub mod config;
 pub mod input;
 pub mod pet;
 pub mod stats;
 
-use crate::app::App;
+use crate::app::{App, AppMode};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 
@@ -42,4 +44,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     pet::render(frame, right_panel[0], app);
     stats::render(frame, right_panel[1], app);
     input::render(frame, outer[1], app);
+
+    // Config overlay on top of everything
+    if app.mode == AppMode::Config {
+        config::render(frame, app);
+    }
 }

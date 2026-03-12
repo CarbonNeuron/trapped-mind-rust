@@ -12,6 +12,50 @@ use crate::system::SystemInfo;
 use chrono::Local;
 use std::time::Instant;
 
+/// Which screen the app is currently showing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AppMode {
+    /// Normal chat view.
+    Normal,
+    /// Configuration menu overlay.
+    Config,
+}
+
+/// A configurable field in the config menu.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ConfigField {
+    Model,
+    OllamaHost,
+    OllamaPort,
+    MaxHistory,
+    AutoThinkDelay,
+    SystemPrompt,
+}
+
+impl ConfigField {
+    /// All fields in display order.
+    pub const ALL: &[ConfigField] = &[
+        ConfigField::Model,
+        ConfigField::OllamaHost,
+        ConfigField::OllamaPort,
+        ConfigField::MaxHistory,
+        ConfigField::AutoThinkDelay,
+        ConfigField::SystemPrompt,
+    ];
+
+    /// Display label for this field.
+    pub fn label(&self) -> &str {
+        match self {
+            ConfigField::Model => "Model",
+            ConfigField::OllamaHost => "Ollama Host",
+            ConfigField::OllamaPort => "Ollama Port",
+            ConfigField::MaxHistory => "Max History",
+            ConfigField::AutoThinkDelay => "Auto-think Delay (s)",
+            ConfigField::SystemPrompt => "System Prompt",
+        }
+    }
+}
+
 /// Events flowing through the main event loop's unified channel.
 pub enum AppEvent {
     /// A crossterm terminal event (key press, resize, etc.).
@@ -87,6 +131,14 @@ pub struct App {
     pub command_history: Vec<String>,
     /// Current position in `command_history` (`None` = not browsing).
     pub command_history_index: Option<usize>,
+    /// Which screen mode is active.
+    pub mode: AppMode,
+    /// Which config field is currently selected.
+    pub config_selected: usize,
+    /// Whether a config field is being edited (input bar repurposed).
+    pub config_editing: bool,
+    /// Temporary edit buffer for config values.
+    pub config_edit_buffer: String,
 }
 
 impl App {
@@ -123,6 +175,10 @@ impl App {
             model,
             command_history: Vec::new(),
             command_history_index: None,
+            mode: AppMode::Normal,
+            config_selected: 0,
+            config_editing: false,
+            config_edit_buffer: String::new(),
         }
     }
 
@@ -193,8 +249,10 @@ impl App {
     }
 
     /// Returns `true` if enough idle time has elapsed to trigger an autonomous thought.
+    /// Disabled while in config mode.
     pub fn should_auto_think(&self) -> bool {
-        !self.is_generating
+        self.mode == AppMode::Normal
+            && !self.is_generating
             && self.last_user_input_time.elapsed().as_secs() >= self.config.auto_think_delay_secs
     }
 
@@ -210,7 +268,7 @@ impl App {
             }
             Command::Help => {
                 self.add_system_message(
-                    "Commands:\n  /help   - Show this help\n  /clear  - Clear memory\n  /model <name> - Switch model\n  /stats  - Show system info\n  /think  - Force a thought now\n  /update - Pull & rebuild\n  /quit   - Exit\n  /exit   - Exit".to_string(),
+                    "Commands:\n  /help   - Show this help\n  /clear  - Clear memory\n  /model <name> - Switch model\n  /stats  - Show system info\n  /think  - Force a thought now\n  /config - Open config menu\n  /update - Pull & rebuild\n  /quit   - Exit\n  /exit   - Exit".to_string(),
                 );
                 HandleResult::Nothing
             }
@@ -245,6 +303,10 @@ impl App {
             }
             Command::Think => {
                 HandleResult::ForceThink
+            }
+            Command::Config => {
+                self.enter_config_mode();
+                HandleResult::Nothing
             }
             Command::Update => {
                 self.add_system_message("Running update...".to_string());
@@ -318,6 +380,99 @@ impl App {
         self.command_history_index = Some(idx);
         self.input_buffer = self.command_history[idx].clone();
         self.input_cursor = self.input_buffer.len();
+    }
+
+    // -- Config mode methods --
+
+    /// Enters config mode, resetting selection state.
+    pub fn enter_config_mode(&mut self) {
+        self.mode = AppMode::Config;
+        self.config_selected = 0;
+        self.config_editing = false;
+        self.config_edit_buffer.clear();
+    }
+
+    /// Exits config mode, applying and saving any pending changes.
+    pub fn exit_config_mode(&mut self) {
+        if self.config_editing {
+            self.config_apply_edit();
+        }
+        self.config.save();
+        // Sync runtime state with config
+        self.model = self.config.model.clone();
+        self.mode = AppMode::Normal;
+        self.add_system_message("Config saved.".to_string());
+    }
+
+    /// Returns the current display value for the selected config field.
+    pub fn config_field_value(&self, field: ConfigField) -> String {
+        match field {
+            ConfigField::Model => self.config.model.clone(),
+            ConfigField::OllamaHost => self.config.ollama_host.clone(),
+            ConfigField::OllamaPort => self.config.ollama_port.to_string(),
+            ConfigField::MaxHistory => self.config.max_history.to_string(),
+            ConfigField::AutoThinkDelay => self.config.auto_think_delay_secs.to_string(),
+            ConfigField::SystemPrompt => self.config.system_prompt.clone()
+                .unwrap_or_else(|| "(default)".to_string()),
+        }
+    }
+
+    /// Starts editing the currently selected config field.
+    pub fn config_start_edit(&mut self) {
+        let field = ConfigField::ALL[self.config_selected];
+        self.config_edit_buffer = match field {
+            ConfigField::SystemPrompt => {
+                self.config.system_prompt.clone().unwrap_or_default()
+            }
+            _ => self.config_field_value(field),
+        };
+        // Don't put "(default)" in the edit buffer
+        if self.config_edit_buffer == "(default)" {
+            self.config_edit_buffer.clear();
+        }
+        self.config_editing = true;
+    }
+
+    /// Applies the current edit buffer to the selected config field.
+    pub fn config_apply_edit(&mut self) {
+        let field = ConfigField::ALL[self.config_selected];
+        let val = self.config_edit_buffer.trim().to_string();
+        match field {
+            ConfigField::Model => {
+                if !val.is_empty() { self.config.model = val; }
+            }
+            ConfigField::OllamaHost => {
+                if !val.is_empty() { self.config.ollama_host = val; }
+            }
+            ConfigField::OllamaPort => {
+                if let Ok(port) = val.parse::<u16>() { self.config.ollama_port = port; }
+            }
+            ConfigField::MaxHistory => {
+                if let Ok(n) = val.parse::<usize>() { self.config.max_history = n; }
+            }
+            ConfigField::AutoThinkDelay => {
+                if let Ok(n) = val.parse::<u64>() { self.config.auto_think_delay_secs = n; }
+            }
+            ConfigField::SystemPrompt => {
+                self.config.system_prompt = if val.is_empty() { None } else { Some(val) };
+            }
+        }
+        self.config_editing = false;
+        self.config_edit_buffer.clear();
+    }
+
+    /// Moves config selection up.
+    pub fn config_up(&mut self) {
+        if self.config_selected > 0 {
+            self.config_selected -= 1;
+        }
+    }
+
+    /// Moves config selection down.
+    pub fn config_down(&mut self) {
+        if self.config_selected + 1 < ConfigField::ALL.len() {
+            self.config_selected += 1;
+        }
     }
 
     /// Recalls the next entry from command history (Down arrow), or clears

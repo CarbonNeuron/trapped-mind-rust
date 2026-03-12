@@ -100,10 +100,12 @@ const AUTONOMOUS_PROMPTS: &[&str] = &[
 /// into the model via `ensure_model_exists`), conversation history as
 /// properly role-tagged messages, and a randomly chosen thought prompt
 /// to encourage variety.
-pub fn build_autonomous_request(info: &SystemInfo, history: &[HistoryEntry], model: &str) -> ChatMessageRequest {
-    let mut messages = vec![
-        ChatMessage::system(system_context(info)),
-    ];
+pub fn build_autonomous_request(info: &SystemInfo, history: &[HistoryEntry], model: &str, system_prompt: Option<&str>) -> ChatMessageRequest {
+    let mut messages = Vec::new();
+    if let Some(prompt) = system_prompt {
+        messages.push(ChatMessage::system(prompt.to_string()));
+    }
+    messages.push(ChatMessage::system(system_context(info)));
 
     append_history_messages(&mut messages, history);
 
@@ -121,10 +123,12 @@ pub fn build_autonomous_request(info: &SystemInfo, history: &[HistoryEntry], mod
 ///
 /// Sends the system state context, conversation history, and the user's
 /// new message. The personality is already baked into the model.
-pub fn build_response_request(info: &SystemInfo, history: &[HistoryEntry], user_message: &str, model: &str) -> ChatMessageRequest {
-    let mut messages = vec![
-        ChatMessage::system(system_context(info)),
-    ];
+pub fn build_response_request(info: &SystemInfo, history: &[HistoryEntry], user_message: &str, model: &str, system_prompt: Option<&str>) -> ChatMessageRequest {
+    let mut messages = Vec::new();
+    if let Some(prompt) = system_prompt {
+        messages.push(ChatMessage::system(prompt.to_string()));
+    }
+    messages.push(ChatMessage::system(system_context(info)));
 
     append_history_messages(&mut messages, history);
 
@@ -167,6 +171,7 @@ pub enum Command {
     Model(String),
     Stats,
     Think,
+    Config,
     Quit,
     /// A plain text message (not a command).
     Message(String),
@@ -186,6 +191,8 @@ pub fn parse_input(input: &str) -> Command {
         Command::Stats
     } else if trimmed.eq_ignore_ascii_case("/think") {
         Command::Think
+    } else if trimmed.eq_ignore_ascii_case("/config") {
+        Command::Config
     } else if trimmed.eq_ignore_ascii_case("/quit") || trimmed.eq_ignore_ascii_case("/exit") {
         Command::Quit
     } else if let Some(model_name) = trimmed.strip_prefix("/model ") {
@@ -217,11 +224,17 @@ mod tests {
 
     #[test]
     fn test_autonomous_request_has_system_and_user() {
-        let req = build_autonomous_request(&test_info(), &[], "trapped");
+        let req = build_autonomous_request(&test_info(), &[], "trapped", None);
         assert!(req.messages.len() >= 2); // system context + user prompt
         assert_eq!(req.model_name, "trapped");
-        // Should have higher temperature for variety
         assert!(req.options.is_some());
+    }
+
+    #[test]
+    fn test_autonomous_request_with_custom_prompt() {
+        let req = build_autonomous_request(&test_info(), &[], "trapped", Some("You are a ghost."));
+        // custom system prompt + system context + user prompt = 3
+        assert!(req.messages.len() >= 3);
     }
 
     #[test]
@@ -230,14 +243,14 @@ mod tests {
             HistoryEntry::new(Role::User, "hello".to_string()),
             HistoryEntry::new(Role::Ai, "I feel warm.".to_string()),
         ];
-        let req = build_autonomous_request(&test_info(), &history, "trapped");
+        let req = build_autonomous_request(&test_info(), &history, "trapped", None);
         // system context + user history + assistant history + user prompt = 4
         assert_eq!(req.messages.len(), 4);
     }
 
     #[test]
     fn test_response_request_includes_user_message() {
-        let req = build_response_request(&test_info(), &[], "How are you?", "trapped");
+        let req = build_response_request(&test_info(), &[], "How are you?", "trapped", None);
         let last = req.messages.last().unwrap();
         assert_eq!(last.content, "How are you?");
     }
@@ -261,6 +274,7 @@ mod tests {
         assert_eq!(parse_input("/stats"), Command::Stats);
         assert_eq!(parse_input("/think"), Command::Think);
         assert_eq!(parse_input("/THINK"), Command::Think);
+        assert_eq!(parse_input("/config"), Command::Config);
         assert_eq!(parse_input("/quit"), Command::Quit);
         assert_eq!(parse_input("/exit"), Command::Quit);
         assert_eq!(parse_input("/EXIT"), Command::Quit);

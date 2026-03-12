@@ -12,7 +12,7 @@ mod pet_states;
 mod system;
 mod ui;
 
-use app::{App, AppEvent, HandleResult};
+use app::{App, AppEvent, AppMode, HandleResult};
 use config::{AppConfig, CliArgs};
 use system::SystemReader;
 
@@ -159,6 +159,11 @@ fn handle_key(
         return;
     }
 
+    if app.mode == AppMode::Config {
+        handle_config_key(app, key);
+        return;
+    }
+
     match key.code {
         KeyCode::Enter => {
             let result = app.submit_input();
@@ -218,6 +223,38 @@ fn handle_key(
     }
 }
 
+/// Handles key presses while the config menu is open.
+fn handle_config_key(app: &mut App, key: KeyEvent) {
+    if app.config_editing {
+        // Editing a field value
+        match key.code {
+            KeyCode::Enter => {
+                app.config_apply_edit();
+            }
+            KeyCode::Esc => {
+                app.config_editing = false;
+                app.config_edit_buffer.clear();
+            }
+            KeyCode::Backspace => {
+                app.config_edit_buffer.pop();
+            }
+            KeyCode::Char(c) => {
+                app.config_edit_buffer.push(c);
+            }
+            _ => {}
+        }
+    } else {
+        // Navigating the menu
+        match key.code {
+            KeyCode::Up => app.config_up(),
+            KeyCode::Down => app.config_down(),
+            KeyCode::Enter => app.config_start_edit(),
+            KeyCode::Esc => app.exit_config_mode(),
+            _ => {}
+        }
+    }
+}
+
 /// Starts an Ollama streaming chat generation in a background task.
 ///
 /// If `user_message` is `Some`, builds a response request; otherwise builds an
@@ -236,10 +273,11 @@ fn spawn_generation(
     let history_entries = app.history.last_n(10).to_vec();
     let info = app.system_info.clone();
     let model = app.model.clone();
+    let sys_prompt = app.config.system_prompt.clone();
 
     let request = match &user_message {
-        Some(msg) => crate::ollama::build_response_request(&info, &history_entries, msg, &model),
-        None => crate::ollama::build_autonomous_request(&info, &history_entries, &model),
+        Some(msg) => crate::ollama::build_response_request(&info, &history_entries, msg, &model, sys_prompt.as_deref()),
+        None => crate::ollama::build_autonomous_request(&info, &history_entries, &model, sys_prompt.as_deref()),
     };
 
     app.start_ai_message();

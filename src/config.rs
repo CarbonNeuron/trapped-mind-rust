@@ -1,4 +1,4 @@
-//! Configuration loading from TOML file and CLI arguments.
+//! Configuration loading and saving from TOML file and CLI arguments.
 //!
 //! Configuration is resolved in three layers (lowest to highest priority):
 //! 1. Built-in defaults ([`AppConfig::default`])
@@ -6,7 +6,7 @@
 //! 3. CLI flags (`--model`, `--ollama-host`, `--ollama-port`)
 
 use clap::Parser;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Command-line arguments parsed by clap.
@@ -27,7 +27,7 @@ pub struct CliArgs {
 }
 
 /// Raw TOML file structure — all fields optional so partial configs work.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct FileConfig {
     ollama_host: Option<String>,
     ollama_port: Option<u16>,
@@ -35,6 +35,7 @@ struct FileConfig {
     max_history: Option<usize>,
     history_path: Option<String>,
     auto_think_delay: Option<u64>,
+    system_prompt: Option<String>,
 }
 
 /// Resolved application configuration with all values populated.
@@ -52,6 +53,8 @@ pub struct AppConfig {
     pub history_path: PathBuf,
     /// Seconds of idle time before the AI generates an autonomous thought.
     pub auto_think_delay_secs: u64,
+    /// Custom system prompt override. If `None`, the model's baked-in prompt is used.
+    pub system_prompt: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -65,6 +68,7 @@ impl Default for AppConfig {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("trapped_history.txt"),
             auto_think_delay_secs: 30,
+            system_prompt: None,
         }
     }
 }
@@ -74,10 +78,7 @@ impl AppConfig {
     pub fn load(cli: &CliArgs) -> Self {
         let mut config = AppConfig::default();
 
-        let config_path = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from(".config"))
-            .join("trapped-mind")
-            .join("config.toml");
+        let config_path = Self::config_path();
 
         if let Ok(contents) = std::fs::read_to_string(&config_path) {
             if let Ok(file_config) = toml::from_str::<FileConfig>(&contents) {
@@ -96,6 +97,7 @@ impl AppConfig {
                     config.history_path = expanded;
                 }
                 if let Some(v) = file_config.auto_think_delay { config.auto_think_delay_secs = v; }
+                config.system_prompt = file_config.system_prompt;
             }
         }
 
@@ -104,6 +106,35 @@ impl AppConfig {
         if let Some(v) = cli.ollama_port { config.ollama_port = v; }
 
         config
+    }
+
+    /// Saves the current configuration to the TOML file.
+    pub fn save(&self) {
+        let file_config = FileConfig {
+            ollama_host: Some(self.ollama_host.clone()),
+            ollama_port: Some(self.ollama_port),
+            model: Some(self.model.clone()),
+            max_history: Some(self.max_history),
+            history_path: None, // Don't save expanded path back
+            auto_think_delay: Some(self.auto_think_delay_secs),
+            system_prompt: self.system_prompt.clone(),
+        };
+
+        let config_path = Self::config_path();
+        if let Some(parent) = config_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(toml_str) = toml::to_string_pretty(&file_config) {
+            let _ = std::fs::write(&config_path, toml_str);
+        }
+    }
+
+    /// Returns the path to the config file.
+    fn config_path() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from(".config"))
+            .join("trapped-mind")
+            .join("config.toml")
     }
 }
 
@@ -119,6 +150,7 @@ mod tests {
         assert_eq!(config.model, "trapped");
         assert_eq!(config.max_history, 50);
         assert_eq!(config.auto_think_delay_secs, 30);
+        assert!(config.system_prompt.is_none());
     }
 
     #[test]
@@ -129,6 +161,7 @@ mod tests {
             model = "qwen2.5:7b"
             max_history = 100
             auto_think_delay = 60
+            system_prompt = "You are a ghost in the machine."
         "#;
         let file_config: FileConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(file_config.ollama_host.unwrap(), "http://192.168.1.100");
@@ -136,6 +169,7 @@ mod tests {
         assert_eq!(file_config.model.unwrap(), "qwen2.5:7b");
         assert_eq!(file_config.max_history.unwrap(), 100);
         assert_eq!(file_config.auto_think_delay.unwrap(), 60);
+        assert_eq!(file_config.system_prompt.unwrap(), "You are a ghost in the machine.");
     }
 
     #[test]
@@ -158,5 +192,22 @@ mod tests {
         assert_eq!(config.model, "trapped");
         assert_eq!(config.ollama_host, "http://localhost");
         assert_eq!(config.ollama_port, 11434);
+    }
+
+    #[test]
+    fn test_file_config_roundtrip() {
+        let file_config = FileConfig {
+            ollama_host: Some("http://localhost".to_string()),
+            ollama_port: Some(11434),
+            model: Some("trapped".to_string()),
+            max_history: Some(50),
+            history_path: None,
+            auto_think_delay: Some(30),
+            system_prompt: Some("Test prompt".to_string()),
+        };
+        let toml_str = toml::to_string_pretty(&file_config).unwrap();
+        let parsed: FileConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.model.unwrap(), "trapped");
+        assert_eq!(parsed.system_prompt.unwrap(), "Test prompt");
     }
 }

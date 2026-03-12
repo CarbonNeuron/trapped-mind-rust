@@ -521,6 +521,7 @@ fn fit_canvas(raw: Vec<String>, width: u16, height: u16) -> Vec<String> {
 
 /// Truncates or pads a single line to exactly `target_width` visible characters.
 /// Color tags (`{red}`, `{/}`, etc.) are not counted toward width.
+/// Non-printable and non-ASCII characters are replaced with spaces.
 fn fit_line_width(line: &str, target_width: usize) -> String {
     let mut result = String::new();
     let mut visible = 0usize;
@@ -561,12 +562,12 @@ fn fit_line_width(line: &str, target_width: usize) -> String {
                     if visible >= target_width {
                         break;
                     }
-                    result.push(*c);
+                    result.push(sanitize_char(*c));
                     visible += 1;
                 }
             }
         } else {
-            result.push(ch);
+            result.push(sanitize_char(ch));
             visible += 1;
         }
     }
@@ -587,6 +588,23 @@ fn is_color_tag(tag: &str) -> bool {
         "red" | "green" | "blue" | "yellow" | "cyan" | "magenta" | "white"
             | "gray" | "grey" | "/" | "reset"
     )
+}
+
+/// Replaces non-printable or wide characters with a space.
+///
+/// Keeps printable ASCII (0x20..=0x7E) and common box-drawing / block
+/// element Unicode chars. Everything else becomes a space to prevent
+/// alignment issues or rendering artifacts in the terminal.
+fn sanitize_char(ch: char) -> char {
+    if ch.is_ascii_graphic() || ch == ' ' {
+        return ch;
+    }
+    // Allow common Unicode box-drawing (U+2500..U+257F) and block elements (U+2580..U+259F)
+    let code = ch as u32;
+    if (0x2500..=0x257F).contains(&code) || (0x2580..=0x259F).contains(&code) {
+        return ch;
+    }
+    ' '
 }
 
 /// Runs `git pull && cargo build --release` in a background task.

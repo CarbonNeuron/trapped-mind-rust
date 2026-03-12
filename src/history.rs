@@ -60,7 +60,7 @@ impl HistoryManager {
         let reader = BufReader::new(file);
         let mut entries: Vec<HistoryEntry> = reader
             .lines()
-            .filter_map(|line| line.ok())
+            .map_while(Result::ok)
             .filter_map(|line| serde_json::from_str(&line).ok())
             .collect();
         if entries.len() > max_entries {

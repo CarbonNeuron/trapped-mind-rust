@@ -6,6 +6,7 @@
 
 mod app;
 mod config;
+mod error;
 mod history;
 mod ollama;
 mod pet_states;
@@ -25,7 +26,7 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> anyhow::Result<()> {
     let cli = CliArgs::parse();
     let config = AppConfig::load(&cli);
     let mut app = App::new(config.clone());
@@ -98,7 +99,7 @@ async fn run_app(
     rx: &mut mpsc::UnboundedReceiver<AppEvent>,
     tx: &mpsc::UnboundedSender<AppEvent>,
     ollama: &Ollama,
-) -> std::io::Result<()> {
+) -> anyhow::Result<()> {
     terminal.draw(|frame| ui::draw(frame, app))?;
 
     loop {
@@ -257,10 +258,10 @@ async fn stream_chat(
         match res {
             Ok(resp) => {
                 let token = resp.message.content;
-                if !token.is_empty() {
-                    if tx.send(AppEvent::Token(token)).is_err() {
-                        return Ok(());
-                    }
+                if !token.is_empty()
+                    && tx.send(AppEvent::Token(token)).is_err()
+                {
+                    return Ok(());
                 }
                 if resp.done {
                     let _ = tx.send(AppEvent::GenerationDone);

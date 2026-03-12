@@ -125,10 +125,10 @@ impl AppConfig {
                 if let Some(v) = file_config.model { config.model = v; }
                 if let Some(v) = file_config.max_history { config.max_history = v; }
                 if let Some(v) = file_config.history_path {
-                    let expanded = if v.starts_with("~/") {
+                    let expanded = if let Some(stripped) = v.strip_prefix("~/") {
                         dirs::home_dir()
                             .unwrap_or_else(|| PathBuf::from("."))
-                            .join(&v[2..])
+                            .join(stripped)
                     } else {
                         PathBuf::from(v)
                     };

@@ -249,7 +249,7 @@ impl SystemReader {
                 if let Some(Ok(bat)) = batteries.next() {
                     let pct = bat.state_of_charge().value * 100.0;
                     let status = format!("{:?}", bat.state());
-                    (pct as f32, status)
+                    (pct, status)
                 } else {
                     (self.sim.battery_percent, "Unknown".to_string())
                 }

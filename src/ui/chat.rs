@@ -40,7 +40,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let inner_width = area.width.saturating_sub(2) as usize;
-    let inner_height = area.height.saturating_sub(2) as u16;
+    let inner_height = area.height.saturating_sub(2);
 
     // Count visual lines after word-wrapping (ceiling division)
     let total_wrapped: u16 = lines.iter().map(|line| {
@@ -48,7 +48,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         if width == 0 || inner_width == 0 {
             1u16
         } else {
-            ((width + inner_width - 1) / inner_width) as u16
+            width.div_ceil(inner_width) as u16
         }
     }).sum();
 

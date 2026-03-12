@@ -240,6 +240,13 @@ async fn run_app(
             Some(AppEvent::ToolStatus(msg)) => {
                 app.add_system_message(msg);
             }
+            Some(AppEvent::ToolDecisionDone) => {
+                // Decision phase finished — close the "Thinking:" message
+                // but keep tool_active so the tool execution phase can proceed.
+                if app.is_generating {
+                    app.finish_ai_message();
+                }
+            }
             Some(AppEvent::ToolCycleDone(summary)) => {
                 if app.is_generating {
                     app.finish_ai_message();
@@ -687,22 +694,29 @@ fn spawn_tool_cycle(
     let registry = Arc::clone(registry);
 
     tokio::spawn(async move {
-        // Phase 1: Decision - collect full response
+        // Phase 1: Decision — stream tokens to chat so the user sees the AI thinking
         let decision_request = decision::build_decision_prompt(&context, &registry);
         let decision_result = llm.stream_generate(decision_request).await;
 
         let raw_decision = match decision_result {
             Ok(mut stream) => {
+                // Show "Thinking:" prefix before streaming decision tokens
+                let _ = tx.send(AppEvent::ToolChatToken("Thinking: ".to_string()));
                 let mut text = String::new();
                 while let Some(result) = stream.recv().await {
                     match result {
-                        Ok(token) => text.push_str(&token),
+                        Ok(token) => {
+                            text.push_str(&token);
+                            let _ = tx.send(AppEvent::ToolChatToken(token));
+                        }
                         Err(e) => {
                             let _ = tx.send(AppEvent::ToolCycleError(e.to_string()));
                             return;
                         }
                     }
                 }
+                // Finish the decision message before tool output starts
+                let _ = tx.send(AppEvent::ToolDecisionDone);
                 text
             }
             Err(e) => {
@@ -714,7 +728,7 @@ fn spawn_tool_cycle(
         // Phase 2: Parse tool call
         let tool_call = decision::parse_tool_call(&raw_decision, registry.tool_names());
 
-        // Phase 3: Dispatch tool
+        // Phase 3: Dispatch tool — stream its output to TUI
         let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel::<ToolOutput>();
 
         // Relay ToolOutput to AppEvent

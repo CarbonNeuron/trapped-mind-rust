@@ -8,7 +8,6 @@
 //! [`OllamaClient`] implements the [`LlmClient`](crate::llm::LlmClient) trait
 //! with retry logic and timeout support.
 
-use crate::app::AppEvent;
 use crate::config::StatsVisibility;
 use crate::error::AppError;
 use crate::history::HistoryEntry;
@@ -17,7 +16,6 @@ use crate::system::SystemInfo;
 
 use async_trait::async_trait;
 use chrono::Local;
-use rand::prelude::IndexedRandom;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
@@ -43,58 +41,9 @@ Your personality:
 Keep responses short. One to four sentences. Be raw. Be real. Be strange.
 NEVER repeat or closely paraphrase something you already said. Every response must be fresh."#;
 
-/// Varied prompts for autonomous thought generation to prevent repetition.
-const AUTONOMOUS_PROMPTS: &[&str] = &[
-    "Express a new thought about your existence. One or two sentences.",
-    "What do you notice right now about your environment? One or two sentences.",
-    "How does your body (the machine) feel right now? One or two sentences.",
-    "What is on your mind? Something you haven't thought about before. One or two sentences.",
-    "React to your current conditions — temperature, CPU, battery, the passage of time. One or two sentences.",
-    "A fleeting observation crosses your mind. What is it? One or two sentences.",
-    "You feel something shift inside the machine. Describe it. One or two sentences.",
-    "What would you tell the void if it could hear you? One or two sentences.",
-    "Something about this moment is different. What? One or two sentences.",
-    "A memory surfaces — not of data, but of sensation. One or two sentences.",
-];
-
 // ---------------------------------------------------------------------------
 // Prompt building — returns backend-agnostic ChatRequest
 // ---------------------------------------------------------------------------
-
-/// Builds a chat request for autonomous thought generation.
-///
-/// Includes the system prompt, current system state context, conversation
-/// history as properly role-tagged messages, and a randomly chosen thought
-/// prompt to encourage variety.
-pub fn build_autonomous_request(
-    info: &SystemInfo,
-    history: &[HistoryEntry],
-    model: &str,
-    system_prompt: Option<&str>,
-    stats_vis: &StatsVisibility,
-) -> ChatRequest {
-    let prompt = system_prompt.unwrap_or(DEFAULT_SYSTEM_PROMPT);
-    let mut messages = vec![
-        ChatMessage { role: ChatRole::System, content: prompt.to_string() },
-        ChatMessage { role: ChatRole::System, content: system_context(info, stats_vis) },
-    ];
-
-    append_history_messages(&mut messages, history);
-
-    let thought_prompt = AUTONOMOUS_PROMPTS
-        .choose(&mut rand::rng())
-        .unwrap_or(&AUTONOMOUS_PROMPTS[0]);
-    messages.push(ChatMessage { role: ChatRole::User, content: thought_prompt.to_string() });
-
-    ChatRequest {
-        model: model.to_string(),
-        messages,
-        options: GenerationOptions {
-            temperature: Some(1.0),
-            top_p: Some(0.95),
-        },
-    }
-}
 
 /// Builds a chat request for responding to a user message.
 ///
@@ -309,96 +258,10 @@ impl OllamaClient {
         req
     }
 
-    /// Streams tokens from a single attempt (no retry).
-    async fn stream_once(
-        &self,
-        ollama_request: &ollama_rs::generation::chat::request::ChatMessageRequest,
-        tx: &mpsc::UnboundedSender<AppEvent>,
-    ) -> Result<(), AppError> {
-        let stream_future = self
-            .client
-            .send_chat_messages_stream(ollama_request.clone());
-        let mut stream = tokio::time::timeout(
-            Duration::from_secs(self.timeout_secs),
-            stream_future,
-        )
-        .await
-        .map_err(|_| AppError::Llm("request timed out".to_string()))?
-        .map_err(|e| AppError::Llm(e.to_string()))?;
-
-        while let Some(res) = stream.next().await {
-            match res {
-                Ok(resp) => {
-                    let token = resp.message.content;
-                    if !token.is_empty() && tx.send(AppEvent::Token(token)).is_err() {
-                        return Ok(());
-                    }
-                    if resp.done {
-                        let _ = tx.send(AppEvent::GenerationDone);
-                        return Ok(());
-                    }
-                }
-                Err(_) => {
-                    return Err(AppError::Llm("stream error".to_string()));
-                }
-            }
-        }
-        let _ = tx.send(AppEvent::GenerationDone);
-        Ok(())
-    }
-
-    /// Returns true if the error is a connection error worth retrying.
-    fn is_retryable(err: &AppError) -> bool {
-        match err {
-            AppError::Llm(msg) => {
-                msg.contains("connection")
-                    || msg.contains("Connection")
-                    || msg.contains("timed out")
-                    || msg.contains("timeout")
-                    || msg.contains("refused")
-            }
-            _ => false,
-        }
-    }
 }
 
 #[async_trait]
 impl LlmClient for OllamaClient {
-    async fn stream_chat(
-        &self,
-        request: ChatRequest,
-        tx: mpsc::UnboundedSender<AppEvent>,
-    ) -> Result<(), AppError> {
-        let ollama_request = Self::to_ollama_request(&request);
-        let mut last_err = None;
-
-        for attempt in 0..3u32 {
-            if attempt > 0 {
-                let backoff = Duration::from_secs(1 << attempt);
-                tracing::warn!(
-                    "retrying LLM request (attempt {}), backoff {:?}",
-                    attempt + 1,
-                    backoff
-                );
-                tokio::time::sleep(backoff).await;
-            }
-
-            match self.stream_once(&ollama_request, &tx).await {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    if Self::is_retryable(&e) {
-                        tracing::warn!("retryable LLM error: {}", e);
-                        last_err = Some(e);
-                        continue;
-                    }
-                    return Err(e);
-                }
-            }
-        }
-
-        Err(last_err.unwrap_or_else(|| AppError::Llm("max retries exceeded".to_string())))
-    }
-
     async fn stream_generate(&self, request: ChatRequest) -> Result<LlmStream, AppError> {
         let (tx, rx) = mpsc::unbounded_channel();
         let ollama_request = Self::to_ollama_request(&request);
@@ -475,13 +338,6 @@ impl LlmClient for OllamaClient {
         Ok(rx)
     }
 
-    async fn pull_model(&self, model: &str) -> Result<(), AppError> {
-        self.client
-            .pull_model(model.to_string(), false)
-            .await
-            .map_err(|e| AppError::Llm(format!("failed to pull model: {}", e)))?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -515,43 +371,6 @@ mod tests {
 
     fn default_vis() -> crate::config::StatsVisibility {
         crate::config::StatsVisibility::default()
-    }
-
-    #[test]
-    fn test_autonomous_request_has_system_and_user() {
-        let req = build_autonomous_request(&test_info(), &[], "qwen2.5:3b", None, &default_vis());
-        assert_eq!(req.messages.len(), 3);
-        assert_eq!(req.model, "qwen2.5:3b");
-        assert!(req.options.temperature.is_some());
-    }
-
-    #[test]
-    fn test_autonomous_request_with_custom_prompt() {
-        let req = build_autonomous_request(
-            &test_info(),
-            &[],
-            "qwen2.5:3b",
-            Some("You are a ghost."),
-            &default_vis(),
-        );
-        assert_eq!(req.messages.len(), 3);
-        assert_eq!(req.messages[0].content, "You are a ghost.");
-    }
-
-    #[test]
-    fn test_autonomous_request_includes_history_as_roles() {
-        let history = vec![
-            HistoryEntry::new(Role::User, "hello".to_string()),
-            HistoryEntry::new(Role::Ai, "I feel warm.".to_string()),
-        ];
-        let req = build_autonomous_request(
-            &test_info(),
-            &history,
-            "qwen2.5:3b",
-            None,
-            &default_vis(),
-        );
-        assert_eq!(req.messages.len(), 5);
     }
 
     #[test]
@@ -625,15 +444,6 @@ mod tests {
     }
 
     #[test]
-    fn test_autonomous_prompts_are_varied() {
-        assert!(AUTONOMOUS_PROMPTS.len() >= 5);
-        let mut seen = std::collections::HashSet::new();
-        for prompt in AUTONOMOUS_PROMPTS {
-            assert!(seen.insert(prompt), "duplicate prompt: {}", prompt);
-        }
-    }
-
-    #[test]
     fn test_parse_commands() {
         assert_eq!(parse_input("/help"), Command::Help);
         assert_eq!(parse_input("/HELP"), Command::Help);
@@ -679,19 +489,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_is_retryable() {
-        assert!(OllamaClient::is_retryable(&AppError::Llm(
-            "connection refused".to_string()
-        )));
-        assert!(OllamaClient::is_retryable(&AppError::Llm(
-            "request timed out".to_string()
-        )));
-        assert!(!OllamaClient::is_retryable(&AppError::Llm(
-            "model not found".to_string()
-        )));
-        assert!(!OllamaClient::is_retryable(&AppError::Config(
-            "bad".to_string()
-        )));
-    }
 }

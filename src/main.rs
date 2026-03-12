@@ -294,7 +294,7 @@ fn handle_key(
             let result = app.submit_input();
             match result {
                 HandleResult::GenerateResponse(text) => {
-                    spawn_generation(llm, app, tx, Some(text));
+                    spawn_generation(llm, app, tx, text);
                 }
                 HandleResult::RunUpdate => {
                     spawn_update(tx.clone());
@@ -378,16 +378,16 @@ fn handle_config_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Starts an LLM streaming chat generation in a background task.
+/// Starts an LLM streaming generation in a background task.
 ///
-/// If `user_message` is `Some`, builds a response request; otherwise builds an
-/// autonomous thought request. The [`LlmClient`] implementation handles retry
-/// logic and timeouts internally.
+/// Builds a response request for the given user message and streams tokens
+/// back via the event channel. The [`LlmClient`] implementation handles
+/// retry logic and timeouts internally.
 fn spawn_generation(
     llm: &Arc<dyn LlmClient>,
     app: &mut App,
     tx: &mpsc::UnboundedSender<AppEvent>,
-    user_message: Option<String>,
+    user_message: String,
 ) {
     if app.is_generating || app.canvas_generating {
         return;
@@ -399,23 +399,14 @@ fn spawn_generation(
     let sys_prompt = app.config.system_prompt.clone();
     let stats_vis = app.config.stats.clone();
 
-    let request = match &user_message {
-        Some(msg) => crate::ollama::build_response_request(
-            &info,
-            &history_entries,
-            msg,
-            &model,
-            sys_prompt.as_deref(),
-            &stats_vis,
-        ),
-        None => crate::ollama::build_autonomous_request(
-            &info,
-            &history_entries,
-            &model,
-            sys_prompt.as_deref(),
-            &stats_vis,
-        ),
-    };
+    let request = crate::ollama::build_response_request(
+        &info,
+        &history_entries,
+        &user_message,
+        &model,
+        sys_prompt.as_deref(),
+        &stats_vis,
+    );
 
     app.start_ai_message();
     app.last_user_input_time = std::time::Instant::now();
@@ -437,36 +428,36 @@ fn spawn_generation(
             tokio::time::sleep(Duration::from_millis(ms)).await;
         }
 
-        match llm.stream_chat(request.clone(), tx.clone()).await {
-            Ok(()) => {}
-            Err(e) => {
-                let err_str = e.to_string();
-                // Auto-pull model if not found, then retry
-                if err_str.contains("not found") || err_str.contains("pull") {
-                    let _ = tx.send(AppEvent::GenerationError(format!(
-                        "Model not found, pulling {}...",
-                        request.model
-                    )));
-                    match llm.pull_model(&request.model).await {
-                        Ok(()) => {
-                            let _ = tx.send(AppEvent::GenerationError(format!(
-                                "Model {} pulled, retrying...",
-                                request.model
-                            )));
-                            if let Err(e) = llm.stream_chat(request, tx.clone()).await {
-                                let _ = tx.send(AppEvent::GenerationError(format!(
-                                    "LLM error: {}",
-                                    e
-                                )));
+        match llm.stream_generate(request.clone()).await {
+            Ok(mut stream) => {
+                while let Some(result) = stream.recv().await {
+                    match result {
+                        Ok(token) => {
+                            if tx.send(AppEvent::Token(token)).is_err() {
+                                break;
                             }
                         }
                         Err(e) => {
-                            let _ = tx.send(AppEvent::GenerationError(format!("{}", e)));
+                            let err_str = e.to_string();
+                            if err_str.contains("not found") || err_str.contains("pull") {
+                                let _ = tx.send(AppEvent::GenerationError(format!(
+                                    "Model not found: {}",
+                                    err_str
+                                )));
+                            } else {
+                                let _ = tx.send(AppEvent::GenerationError(format!(
+                                    "LLM error: {}",
+                                    err_str
+                                )));
+                            }
+                            return;
                         }
                     }
-                } else {
-                    let _ = tx.send(AppEvent::GenerationError(format!("LLM error: {}", e)));
                 }
+                let _ = tx.send(AppEvent::GenerationDone);
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::GenerationError(format!("LLM error: {}", e)));
             }
         }
     });
@@ -532,38 +523,27 @@ fn spawn_canvas_generation(
     let tx = tx.clone();
 
     app.canvas_task = Some(tokio::spawn(async move {
-        // Use a wrapper that sends CanvasToken/CanvasDone instead of Token/GenerationDone
-        let (inner_tx, mut inner_rx) = mpsc::unbounded_channel::<AppEvent>();
-
-        let stream_handle = tokio::spawn({
-            let llm = Arc::clone(&llm);
-            async move {
-                let _ = llm.stream_chat(request, inner_tx).await;
-            }
-        });
-
-        // Relay tokens as CanvasToken events
-        while let Some(evt) = inner_rx.recv().await {
-            match evt {
-                AppEvent::Token(token) => {
-                    if tx.send(AppEvent::CanvasToken(token)).is_err() {
-                        break;
+        match llm.stream_generate(request).await {
+            Ok(mut stream) => {
+                while let Some(result) = stream.recv().await {
+                    match result {
+                        Ok(token) => {
+                            if tx.send(AppEvent::CanvasToken(token)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            let _ = tx.send(AppEvent::CanvasDone);
+                            return;
+                        }
                     }
                 }
-                AppEvent::GenerationDone => {
-                    let _ = tx.send(AppEvent::CanvasDone);
-                    break;
-                }
-                AppEvent::GenerationError(_) => {
-                    // Canvas generation failed silently — keep previous canvas
-                    let _ = tx.send(AppEvent::CanvasDone);
-                    break;
-                }
-                _ => {}
+                let _ = tx.send(AppEvent::CanvasDone);
+            }
+            Err(_) => {
+                let _ = tx.send(AppEvent::CanvasDone);
             }
         }
-
-        let _ = stream_handle.await;
     }));
 }
 

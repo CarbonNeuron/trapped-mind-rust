@@ -5,7 +5,6 @@
 //! [`OllamaClient`](crate::ollama::OllamaClient)) convert these types to
 //! their native formats internally.
 
-use crate::app::AppEvent;
 use crate::error::AppError;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
@@ -48,21 +47,10 @@ pub type LlmStream = mpsc::UnboundedReceiver<Result<String, AppError>>;
 /// Trait for LLM backends that support streaming chat.
 #[async_trait]
 pub trait LlmClient: Send + Sync {
-    /// Streams a chat completion, sending tokens as [`AppEvent::Token`] and
-    /// completion as [`AppEvent::GenerationDone`] through the channel.
-    async fn stream_chat(
-        &self,
-        request: ChatRequest,
-        tx: mpsc::UnboundedSender<AppEvent>,
-    ) -> Result<(), AppError>;
-
     /// Streams a chat completion, returning a token receiver.
     /// Each token arrives as Ok(String). Sender is dropped on completion.
     /// Errors arrive as Err(AppError).
     async fn stream_generate(&self, request: ChatRequest) -> Result<LlmStream, AppError>;
-
-    /// Pulls/downloads a model by name.
-    async fn pull_model(&self, model: &str) -> Result<(), AppError>;
 }
 
 #[cfg(test)]

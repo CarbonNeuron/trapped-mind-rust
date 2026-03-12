@@ -147,6 +147,13 @@ fn parse_colored_line(line: &str, default_color: Color, max_width: usize) -> Lin
 
 /// Maps a tag name (without braces) to a color, or `None` if unrecognized.
 fn parse_color_tag(tag: &str, default_color: Color) -> Option<Color> {
+    // Hex color tag: #RRGGBB
+    if tag.starts_with('#') && tag.len() == 7 && tag[1..].chars().all(|c| c.is_ascii_hexdigit()) {
+        let r = u8::from_str_radix(&tag[1..3], 16).ok()?;
+        let g = u8::from_str_radix(&tag[3..5], 16).ok()?;
+        let b = u8::from_str_radix(&tag[5..7], 16).ok()?;
+        return Some(Color::Rgb(r, g, b));
+    }
     match tag.to_lowercase().as_str() {
         "red" => Some(Color::Red),
         "green" => Some(Color::Green),
@@ -206,5 +213,26 @@ mod tests {
         let line = parse_colored_line("hello { world", Color::Cyan, 80);
         let total: String = line.spans.iter().map(|s| s.content.to_string()).collect();
         assert!(total.contains("{"));
+    }
+
+    #[test]
+    fn test_hex_color_tag() {
+        let line = parse_colored_line("{#FF8800}warm{/}", Color::Cyan, 80);
+        assert_eq!(line.spans[0].content, "warm");
+        assert_eq!(line.spans[0].style.fg, Some(Color::Rgb(255, 136, 0)));
+    }
+
+    #[test]
+    fn test_hex_color_tag_lowercase() {
+        let line = parse_colored_line("{#ff8800}warm{/}", Color::Cyan, 80);
+        assert_eq!(line.spans[0].content, "warm");
+        assert_eq!(line.spans[0].style.fg, Some(Color::Rgb(255, 136, 0)));
+    }
+
+    #[test]
+    fn test_invalid_hex_rendered_literally() {
+        let line = parse_colored_line("{#GG0000}text", Color::Cyan, 80);
+        let total: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(total.contains("{#GG0000}"));
     }
 }

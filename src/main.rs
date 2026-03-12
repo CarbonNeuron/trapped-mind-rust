@@ -15,6 +15,8 @@ mod pet_states;
 mod system;
 mod tools;
 mod ui;
+#[allow(dead_code)]
+mod canvas_lang;
 
 use app::{App, AppEvent, AppMode, HandleResult};
 use chrono::Local;
@@ -634,6 +636,10 @@ fn fit_line_width(line: &str, target_width: usize) -> String {
 
 /// Returns true if the tag name is a recognized color tag.
 fn is_color_tag(tag: &str) -> bool {
+    // Hex color tag: #RRGGBB (7 chars total, '#' + 6 hex digits)
+    if tag.starts_with('#') && tag.len() == 7 && tag[1..].chars().all(|c| c.is_ascii_hexdigit()) {
+        return true;
+    }
     matches!(
         tag.to_lowercase().as_str(),
         "red" | "green" | "blue" | "yellow" | "cyan" | "magenta" | "white"

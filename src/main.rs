@@ -180,13 +180,13 @@ async fn run_app(
                 app.pet_frame_index = app.pet_frame_index.wrapping_add(1);
             }
             Some(AppEvent::CanvasToken(token)) => {
-                // Stream canvas live: accumulate in buffer, split into lines for display
                 app.canvas_buffer.push_str(&token);
-                app.canvas_lines = app.canvas_buffer.lines().map(String::from).collect();
+                let raw: Vec<String> = app.canvas_buffer.lines().map(String::from).collect();
+                app.canvas_lines = fit_canvas(raw, app.canvas_width, app.canvas_height);
             }
             Some(AppEvent::CanvasDone) => {
-                // Finalize: ensure lines are from the final buffer state
-                app.canvas_lines = app.canvas_buffer.lines().map(String::from).collect();
+                let raw: Vec<String> = app.canvas_buffer.lines().map(String::from).collect();
+                app.canvas_lines = fit_canvas(raw, app.canvas_width, app.canvas_height);
                 app.canvas_buffer.clear();
                 app.canvas_generating = false;
             }
@@ -494,6 +494,99 @@ fn spawn_canvas_generation(
 
         let _ = stream_handle.await;
     });
+}
+
+/// Normalizes canvas output to exact panel dimensions.
+///
+/// - Truncates or pads each line to exactly `width` visible characters
+///   (color tags like `{red}` are preserved but not counted).
+/// - Truncates or pads line count to exactly `height` lines.
+fn fit_canvas(raw: Vec<String>, width: u16, height: u16) -> Vec<String> {
+    let w = width as usize;
+    let h = height as usize;
+
+    let mut lines: Vec<String> = raw
+        .into_iter()
+        .take(h)
+        .map(|line| fit_line_width(&line, w))
+        .collect();
+
+    // Pad with empty lines if too few
+    while lines.len() < h {
+        lines.push(" ".repeat(w));
+    }
+
+    lines
+}
+
+/// Truncates or pads a single line to exactly `target_width` visible characters.
+/// Color tags (`{red}`, `{/}`, etc.) are not counted toward width.
+fn fit_line_width(line: &str, target_width: usize) -> String {
+    let mut result = String::new();
+    let mut visible = 0usize;
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if visible >= target_width {
+            break;
+        }
+
+        if ch == '{' {
+            // Try to read a color tag
+            let mut tag_content = String::new();
+            let mut lookahead = vec![ch]; // include '{'
+            let mut found_close = false;
+            for _ in 0..10 {
+                if let Some(&next) = chars.peek() {
+                    lookahead.push(next);
+                    chars.next();
+                    if next == '}' {
+                        found_close = true;
+                        break;
+                    }
+                    tag_content.push(next);
+                } else {
+                    break;
+                }
+            }
+
+            if found_close && is_color_tag(&tag_content) {
+                // Emit the color tag without counting toward visible width
+                for c in &lookahead {
+                    result.push(*c);
+                }
+            } else {
+                // Not a valid tag, emit as literal visible characters
+                for c in &lookahead {
+                    if visible >= target_width {
+                        break;
+                    }
+                    result.push(*c);
+                    visible += 1;
+                }
+            }
+        } else {
+            result.push(ch);
+            visible += 1;
+        }
+    }
+
+    // Pad with spaces if too short
+    while visible < target_width {
+        result.push(' ');
+        visible += 1;
+    }
+
+    result
+}
+
+/// Returns true if the tag name is a recognized color tag.
+fn is_color_tag(tag: &str) -> bool {
+    matches!(
+        tag.to_lowercase().as_str(),
+        "red" | "green" | "blue" | "yellow" | "cyan" | "magenta" | "white"
+            | "gray" | "grey" | "/" | "reset"
+    )
 }
 
 /// Runs `git pull && cargo build --release` in a background task.

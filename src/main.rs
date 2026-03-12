@@ -274,10 +274,24 @@ fn spawn_generation(
     app.start_ai_message();
     app.last_user_input_time = std::time::Instant::now();
 
+    let delay_min = app.config.think_delay_min_ms;
+    let delay_max = app.config.think_delay_max_ms;
+
     let ollama = ollama.clone();
     let tx = tx.clone();
 
     tokio::spawn(async move {
+        // Pause before streaming to simulate thinking
+        if delay_max > 0 {
+            let range = delay_min..=delay_max;
+            let ms = if delay_min >= delay_max {
+                delay_min
+            } else {
+                rand::random_range(range)
+            };
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+        }
+
         match ollama.send_chat_messages_stream(request).await {
             Ok(mut stream) => {
                 while let Some(res) = stream.next().await {

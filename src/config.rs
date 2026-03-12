@@ -62,6 +62,8 @@ struct FileConfig {
     history_path: Option<String>,
     auto_think_delay: Option<u64>,
     system_prompt: Option<String>,
+    think_delay_min_ms: Option<u64>,
+    think_delay_max_ms: Option<u64>,
     stats: Option<StatsVisibility>,
 }
 
@@ -82,6 +84,10 @@ pub struct AppConfig {
     pub auto_think_delay_secs: u64,
     /// Custom system prompt override. If `None`, the default prompt is used.
     pub system_prompt: Option<String>,
+    /// Minimum thinking pause before first token (milliseconds).
+    pub think_delay_min_ms: u64,
+    /// Maximum thinking pause before first token (milliseconds).
+    pub think_delay_max_ms: u64,
     /// Which stats are shown in the UI panel and sent to the model.
     pub stats: StatsVisibility,
 }
@@ -98,6 +104,8 @@ impl Default for AppConfig {
                 .join("trapped_history.txt"),
             auto_think_delay_secs: 30,
             system_prompt: None,
+            think_delay_min_ms: 500,
+            think_delay_max_ms: 2000,
             stats: StatsVisibility::default(),
         }
     }
@@ -128,6 +136,8 @@ impl AppConfig {
                 }
                 if let Some(v) = file_config.auto_think_delay { config.auto_think_delay_secs = v; }
                 config.system_prompt = file_config.system_prompt;
+                if let Some(v) = file_config.think_delay_min_ms { config.think_delay_min_ms = v; }
+                if let Some(v) = file_config.think_delay_max_ms { config.think_delay_max_ms = v; }
                 if let Some(v) = file_config.stats { config.stats = v; }
             }
         }
@@ -149,6 +159,8 @@ impl AppConfig {
             history_path: None, // Don't save expanded path back
             auto_think_delay: Some(self.auto_think_delay_secs),
             system_prompt: self.system_prompt.clone(),
+            think_delay_min_ms: Some(self.think_delay_min_ms),
+            think_delay_max_ms: Some(self.think_delay_max_ms),
             stats: Some(self.stats.clone()),
         };
 
@@ -247,6 +259,8 @@ mod tests {
             history_path: None,
             auto_think_delay: Some(30),
             system_prompt: Some("Test prompt".to_string()),
+            think_delay_min_ms: Some(500),
+            think_delay_max_ms: Some(2000),
             stats: Some(StatsVisibility { cpu: true, temperature: false, ..Default::default() }),
         };
         let toml_str = toml::to_string_pretty(&file_config).unwrap();

@@ -29,6 +29,8 @@ pub enum ConfigField {
     OllamaPort,
     MaxHistory,
     AutoThinkDelay,
+    ThinkDelayMin,
+    ThinkDelayMax,
     SystemPrompt,
     ShowCpu,
     ShowTemp,
@@ -47,6 +49,8 @@ impl ConfigField {
         ConfigField::OllamaPort,
         ConfigField::MaxHistory,
         ConfigField::AutoThinkDelay,
+        ConfigField::ThinkDelayMin,
+        ConfigField::ThinkDelayMax,
         ConfigField::SystemPrompt,
         ConfigField::ShowCpu,
         ConfigField::ShowTemp,
@@ -65,6 +69,8 @@ impl ConfigField {
             ConfigField::OllamaPort => "Ollama Port",
             ConfigField::MaxHistory => "Max History",
             ConfigField::AutoThinkDelay => "Auto-think Delay (s)",
+            ConfigField::ThinkDelayMin => "Think Pause Min (ms)",
+            ConfigField::ThinkDelayMax => "Think Pause Max (ms)",
             ConfigField::SystemPrompt => "System Prompt",
             ConfigField::ShowCpu => "Show CPU",
             ConfigField::ShowTemp => "Show Temperature",
@@ -440,6 +446,8 @@ impl App {
             ConfigField::OllamaPort => self.config.ollama_port.to_string(),
             ConfigField::MaxHistory => self.config.max_history.to_string(),
             ConfigField::AutoThinkDelay => self.config.auto_think_delay_secs.to_string(),
+            ConfigField::ThinkDelayMin => self.config.think_delay_min_ms.to_string(),
+            ConfigField::ThinkDelayMax => self.config.think_delay_max_ms.to_string(),
             ConfigField::SystemPrompt => self.config.system_prompt.clone()
                 .unwrap_or_else(|| "(default)".to_string()),
             ConfigField::ShowCpu => if self.config.stats.cpu { "ON" } else { "OFF" }.to_string(),
@@ -507,6 +515,12 @@ impl App {
             }
             ConfigField::AutoThinkDelay => {
                 if let Ok(n) = val.parse::<u64>() { self.config.auto_think_delay_secs = n; }
+            }
+            ConfigField::ThinkDelayMin => {
+                if let Ok(n) = val.parse::<u64>() { self.config.think_delay_min_ms = n; }
+            }
+            ConfigField::ThinkDelayMax => {
+                if let Ok(n) = val.parse::<u64>() { self.config.think_delay_max_ms = n; }
             }
             ConfigField::SystemPrompt => {
                 self.config.system_prompt = if val.is_empty() { None } else { Some(val) };

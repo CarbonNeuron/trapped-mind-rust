@@ -56,6 +56,7 @@ impl PetMood {
     }
 
     /// Returns the display color for this mood.
+    #[allow(dead_code)]
     pub fn color(&self) -> ratatui::style::Color {
         use ratatui::style::Color;
         match self {
@@ -70,6 +71,7 @@ impl PetMood {
     }
 
     /// Returns the animation frames for this mood.
+    #[allow(dead_code)]
     pub fn frames(&self) -> &[&[&str]] {
         match self {
             PetMood::Idle => &IDLE_FRAMES,
@@ -90,6 +92,7 @@ impl PetMood {
 // Eye pupils:  "  │Xx│  │Xx│  " (14 inner)
 // Eye bottoms: "  └──┘  └──┘  " (14 inner)
 
+#[allow(dead_code)]
 const IDLE_FRAMES: [&[&str]; 4] = [
     &[
         "  ┌──────────────┐  ",
@@ -133,6 +136,7 @@ const IDLE_FRAMES: [&[&str]; 4] = [
     ],
 ];
 
+#[allow(dead_code)]
 const THINKING_FRAMES: [&[&str]; 3] = [
     &[
         "  ┌──────────────┐  ",
@@ -166,6 +170,7 @@ const THINKING_FRAMES: [&[&str]; 3] = [
     ],
 ];
 
+#[allow(dead_code)]
 const LISTENING_FRAMES: [&[&str]; 2] = [
     &[
         "  ┌──────────────┐  ",
@@ -189,6 +194,7 @@ const LISTENING_FRAMES: [&[&str]; 2] = [
     ],
 ];
 
+#[allow(dead_code)]
 const HOT_FRAMES: [&[&str]; 2] = [
     &[
         "  ┌──────────────┐  ",
@@ -212,6 +218,7 @@ const HOT_FRAMES: [&[&str]; 2] = [
     ],
 ];
 
+#[allow(dead_code)]
 const HIGH_CPU_FRAMES: [&[&str]; 3] = [
     &[
         "  ┌──────────────┐  ",
@@ -245,6 +252,7 @@ const HIGH_CPU_FRAMES: [&[&str]; 3] = [
     ],
 ];
 
+#[allow(dead_code)]
 const LOW_BATTERY_FRAMES: [&[&str]; 2] = [
     &[
         "  ┌──────────────┐  ",
@@ -268,6 +276,7 @@ const LOW_BATTERY_FRAMES: [&[&str]; 2] = [
     ],
 ];
 
+#[allow(dead_code)]
 const CHARGING_FRAMES: [&[&str]; 2] = [
     &[
         "  ┌──────────────┐  ",

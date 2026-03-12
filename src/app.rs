@@ -106,6 +106,10 @@ pub enum AppEvent {
     GenerationError(String),
     /// The pet animation timer fired.
     AnimationTick,
+    /// A single token from an in-progress canvas generation.
+    CanvasToken(String),
+    /// The canvas generation completed successfully.
+    CanvasDone,
     /// Graceful shutdown requested (Ctrl+C / SIGTERM).
     Shutdown,
 }
@@ -161,6 +165,16 @@ pub struct App {
     pub should_quit: bool,
     /// Animation frame counter for the pet face (wraps on overflow).
     pub pet_frame_index: usize,
+    /// Lines of ASCII art currently displayed in the canvas panel.
+    pub canvas_lines: Vec<String>,
+    /// Buffer accumulating tokens during canvas generation.
+    pub canvas_buffer: String,
+    /// Whether a canvas generation is currently in progress.
+    pub canvas_generating: bool,
+    /// Last known inner dimensions of the canvas panel.
+    pub canvas_width: u16,
+    /// Last known inner height of the canvas panel.
+    pub canvas_height: u16,
     /// Timestamp of the last user interaction (for auto-think delay).
     pub last_user_input_time: Instant,
     /// Currently active Ollama model name.
@@ -220,6 +234,11 @@ impl App {
             is_user_typing: false,
             should_quit: false,
             pet_frame_index: 0,
+            canvas_lines: Vec::new(),
+            canvas_buffer: String::new(),
+            canvas_generating: false,
+            canvas_width: 0,
+            canvas_height: 0,
             last_user_input_time: Instant::now(),
             model,
             command_history: Vec::new(),

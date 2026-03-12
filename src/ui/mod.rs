@@ -1,9 +1,10 @@
 //! UI rendering — splits the terminal into four panels and delegates to submodules.
 //!
-//! Layout: chat (left 70%), pet face (top-right 30%), system stats
+//! Layout: chat (left 70%), canvas (top-right 30%), system stats
 //! (bottom-right 30%), and input bar (full-width bottom).
 //! When in config mode, an overlay is drawn on top of the normal UI.
 
+pub mod canvas;
 pub mod chat;
 pub mod config;
 pub mod input;
@@ -15,7 +16,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 
 /// Renders the full application UI into the given terminal frame.
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -41,7 +42,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .split(main_area[1]);
 
     chat::render(frame, main_area[0], app);
-    pet::render(frame, right_panel[0], app);
+    canvas::render(frame, right_panel[0], app);
     stats::render(frame, right_panel[1], app);
     input::render(frame, outer[1], app);
 

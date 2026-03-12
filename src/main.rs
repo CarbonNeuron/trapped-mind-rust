@@ -170,12 +170,24 @@ async fn run_app(
             }
             Some(AppEvent::GenerationDone) => {
                 app.finish_ai_message();
+                // Trigger canvas generation after each completed thought/response
+                spawn_canvas_generation(llm, app, tx);
             }
             Some(AppEvent::GenerationError(err)) => {
                 app.handle_generation_error(err);
             }
             Some(AppEvent::AnimationTick) => {
                 app.pet_frame_index = app.pet_frame_index.wrapping_add(1);
+            }
+            Some(AppEvent::CanvasToken(token)) => {
+                app.canvas_buffer.push_str(&token);
+            }
+            Some(AppEvent::CanvasDone) => {
+                // Split buffer into lines, trim to canvas dimensions
+                let lines: Vec<String> = app.canvas_buffer.lines().map(String::from).collect();
+                app.canvas_lines = lines;
+                app.canvas_buffer.clear();
+                app.canvas_generating = false;
             }
             Some(AppEvent::Shutdown) => {
                 tracing::info!("shutdown signal received");
@@ -387,6 +399,95 @@ fn spawn_generation(
                 }
             }
         }
+    });
+}
+
+/// Starts a canvas art generation in a background task.
+///
+/// Asks the model to generate ASCII art for the canvas panel based on
+/// the current system state and the last AI thought. Sends tokens as
+/// `CanvasToken` and completion as `CanvasDone`.
+fn spawn_canvas_generation(
+    llm: &Arc<dyn LlmClient>,
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    // Don't overlap canvas generations, and need valid dimensions
+    if app.canvas_generating || app.canvas_width == 0 || app.canvas_height == 0 {
+        return;
+    }
+
+    let info = app.system_info.clone();
+    let model = app.model.clone();
+    let stats_vis = app.config.stats.clone();
+    let width = app.canvas_width;
+    let height = app.canvas_height;
+
+    // Get the mood from pet_states for context
+    let mood = crate::pet_states::PetMood::from_state(
+        &app.system_info,
+        app.is_generating,
+        app.is_user_typing,
+    );
+    let mood_str = format!("{:?}", mood);
+
+    // Get the last AI message for context
+    let last_thought = app
+        .chat_messages
+        .iter()
+        .rev()
+        .find(|m| m.role == crate::history::Role::Ai && m.complete)
+        .map(|m| m.text.clone());
+
+    let request = crate::ollama::build_canvas_request(
+        &info,
+        &mood_str,
+        last_thought.as_deref(),
+        width,
+        height,
+        &model,
+        &stats_vis,
+    );
+
+    app.canvas_generating = true;
+    app.canvas_buffer.clear();
+
+    let llm = Arc::clone(llm);
+    let tx = tx.clone();
+
+    tokio::spawn(async move {
+        // Use a wrapper that sends CanvasToken/CanvasDone instead of Token/GenerationDone
+        let (inner_tx, mut inner_rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        let stream_handle = tokio::spawn({
+            let llm = Arc::clone(&llm);
+            async move {
+                let _ = llm.stream_chat(request, inner_tx).await;
+            }
+        });
+
+        // Relay tokens as CanvasToken events
+        while let Some(evt) = inner_rx.recv().await {
+            match evt {
+                AppEvent::Token(token) => {
+                    if tx.send(AppEvent::CanvasToken(token)).is_err() {
+                        break;
+                    }
+                }
+                AppEvent::GenerationDone => {
+                    let _ = tx.send(AppEvent::CanvasDone);
+                    break;
+                }
+                AppEvent::GenerationError(_) => {
+                    // Canvas generation failed silently — keep previous canvas
+                    let _ = tx.send(AppEvent::CanvasDone);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        let _ = stream_handle.await;
     });
 }
 

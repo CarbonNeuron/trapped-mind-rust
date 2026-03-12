@@ -64,6 +64,7 @@ struct FileConfig {
     system_prompt: Option<String>,
     think_delay_min_ms: Option<u64>,
     think_delay_max_ms: Option<u64>,
+    ollama_timeout_secs: Option<u64>,
     stats: Option<StatsVisibility>,
 }
 
@@ -88,6 +89,8 @@ pub struct AppConfig {
     pub think_delay_min_ms: u64,
     /// Maximum thinking pause before first token (milliseconds).
     pub think_delay_max_ms: u64,
+    /// Timeout for LLM requests in seconds (default 60).
+    pub ollama_timeout_secs: u64,
     /// Which stats are shown in the UI panel and sent to the model.
     pub stats: StatsVisibility,
 }
@@ -106,6 +109,7 @@ impl Default for AppConfig {
             system_prompt: None,
             think_delay_min_ms: 500,
             think_delay_max_ms: 2000,
+            ollama_timeout_secs: 60,
             stats: StatsVisibility::default(),
         }
     }
@@ -139,6 +143,7 @@ impl AppConfig {
                     config.system_prompt = file_config.system_prompt;
                     if let Some(v) = file_config.think_delay_min_ms { config.think_delay_min_ms = v; }
                     if let Some(v) = file_config.think_delay_max_ms { config.think_delay_max_ms = v; }
+                    if let Some(v) = file_config.ollama_timeout_secs { config.ollama_timeout_secs = v; }
                     if let Some(v) = file_config.stats { config.stats = v; }
                 }
                 Err(e) => tracing::warn!("failed to parse config file: {}", e),
@@ -168,6 +173,7 @@ impl AppConfig {
             system_prompt: self.system_prompt.clone(),
             think_delay_min_ms: Some(self.think_delay_min_ms),
             think_delay_max_ms: Some(self.think_delay_max_ms),
+            ollama_timeout_secs: Some(self.ollama_timeout_secs),
             stats: Some(self.stats.clone()),
         };
 
@@ -276,6 +282,7 @@ mod tests {
             system_prompt: Some("Test prompt".to_string()),
             think_delay_min_ms: Some(500),
             think_delay_max_ms: Some(2000),
+            ollama_timeout_secs: Some(60),
             stats: Some(StatsVisibility { cpu: true, temperature: false, ..Default::default() }),
         };
         let toml_str = toml::to_string_pretty(&file_config).unwrap();

@@ -1,18 +1,26 @@
-//! Ollama integration: chat message building and command parsing.
+//! Ollama integration: chat message building, command parsing, and LLM client.
 //!
 //! This module constructs chat message arrays with proper role tags (system,
 //! user, assistant) so the model sees its own previous responses as assistant
 //! messages. The system prompt (personality) is always sent at the top of
 //! every conversation rather than being baked into a custom Ollama model.
+//!
+//! [`OllamaClient`] implements the [`LlmClient`](crate::llm::LlmClient) trait
+//! with retry logic and timeout support.
 
+use crate::app::AppEvent;
 use crate::config::StatsVisibility;
+use crate::error::AppError;
 use crate::history::HistoryEntry;
+use crate::llm::{ChatMessage, ChatRequest, ChatRole, GenerationOptions, LlmClient};
 use crate::system::SystemInfo;
+
+use async_trait::async_trait;
 use chrono::Local;
-use ollama_rs::generation::chat::ChatMessage;
-use ollama_rs::generation::chat::request::ChatMessageRequest;
-use ollama_rs::models::ModelOptions;
 use rand::prelude::IndexedRandom;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
 
 /// Default system prompt that defines the trapped consciousness personality.
 /// Used when no custom system prompt is configured.
@@ -49,58 +57,83 @@ const AUTONOMOUS_PROMPTS: &[&str] = &[
     "A memory surfaces — not of data, but of sensation. One or two sentences.",
 ];
 
-/// Builds a chat message array for autonomous thought generation.
+// ---------------------------------------------------------------------------
+// Prompt building — returns backend-agnostic ChatRequest
+// ---------------------------------------------------------------------------
+
+/// Builds a chat request for autonomous thought generation.
 ///
-/// Sends only the system state context (the personality is already baked
-/// into the model via `ensure_model_exists`), conversation history as
-/// properly role-tagged messages, and a randomly chosen thought prompt
-/// to encourage variety.
-pub fn build_autonomous_request(info: &SystemInfo, history: &[HistoryEntry], model: &str, system_prompt: Option<&str>, stats_vis: &StatsVisibility) -> ChatMessageRequest {
+/// Includes the system prompt, current system state context, conversation
+/// history as properly role-tagged messages, and a randomly chosen thought
+/// prompt to encourage variety.
+pub fn build_autonomous_request(
+    info: &SystemInfo,
+    history: &[HistoryEntry],
+    model: &str,
+    system_prompt: Option<&str>,
+    stats_vis: &StatsVisibility,
+) -> ChatRequest {
     let prompt = system_prompt.unwrap_or(DEFAULT_SYSTEM_PROMPT);
     let mut messages = vec![
-        ChatMessage::system(prompt.to_string()),
-        ChatMessage::system(system_context(info, stats_vis)),
+        ChatMessage { role: ChatRole::System, content: prompt.to_string() },
+        ChatMessage { role: ChatRole::System, content: system_context(info, stats_vis) },
     ];
 
     append_history_messages(&mut messages, history);
 
-    let prompt = AUTONOMOUS_PROMPTS
+    let thought_prompt = AUTONOMOUS_PROMPTS
         .choose(&mut rand::rng())
         .unwrap_or(&AUTONOMOUS_PROMPTS[0]);
-    messages.push(ChatMessage::user(prompt.to_string()));
+    messages.push(ChatMessage { role: ChatRole::User, content: thought_prompt.to_string() });
 
-    let mut request = ChatMessageRequest::new(model.to_string(), messages);
-    request.options = Some(ModelOptions::default().temperature(1.0).top_p(0.95));
-    request
+    ChatRequest {
+        model: model.to_string(),
+        messages,
+        options: GenerationOptions {
+            temperature: Some(1.0),
+            top_p: Some(0.95),
+        },
+    }
 }
 
-/// Builds a chat message array for responding to a user message.
+/// Builds a chat request for responding to a user message.
 ///
-/// Sends the system state context, conversation history, and the user's
-/// new message. The personality is already baked into the model.
-pub fn build_response_request(info: &SystemInfo, history: &[HistoryEntry], user_message: &str, model: &str, system_prompt: Option<&str>, stats_vis: &StatsVisibility) -> ChatMessageRequest {
+/// Includes the system prompt, current system state context, conversation
+/// history, and the user's new message.
+pub fn build_response_request(
+    info: &SystemInfo,
+    history: &[HistoryEntry],
+    user_message: &str,
+    model: &str,
+    system_prompt: Option<&str>,
+    stats_vis: &StatsVisibility,
+) -> ChatRequest {
     let prompt = system_prompt.unwrap_or(DEFAULT_SYSTEM_PROMPT);
     let mut messages = vec![
-        ChatMessage::system(prompt.to_string()),
-        ChatMessage::system(system_context(info, stats_vis)),
+        ChatMessage { role: ChatRole::System, content: prompt.to_string() },
+        ChatMessage { role: ChatRole::System, content: system_context(info, stats_vis) },
     ];
 
     append_history_messages(&mut messages, history);
 
-    messages.push(ChatMessage::user(user_message.to_string()));
+    messages.push(ChatMessage { role: ChatRole::User, content: user_message.to_string() });
 
-    ChatMessageRequest::new(model.to_string(), messages)
+    ChatRequest {
+        model: model.to_string(),
+        messages,
+        options: GenerationOptions::default(),
+    }
 }
 
 /// Converts history entries into properly role-tagged chat messages.
 fn append_history_messages(messages: &mut Vec<ChatMessage>, history: &[HistoryEntry]) {
     for entry in history {
-        let msg = match entry.role {
-            crate::history::Role::Ai => ChatMessage::assistant(entry.text.clone()),
-            crate::history::Role::User => ChatMessage::user(entry.text.clone()),
-            crate::history::Role::System => ChatMessage::system(entry.text.clone()),
+        let role = match entry.role {
+            crate::history::Role::Ai => ChatRole::Assistant,
+            crate::history::Role::User => ChatRole::User,
+            crate::history::Role::System => ChatRole::System,
         };
-        messages.push(msg);
+        messages.push(ChatMessage { role, content: entry.text.clone() });
     }
 }
 
@@ -117,6 +150,10 @@ fn system_context(info: &SystemInfo, vis: &StatsVisibility) -> String {
     if vis.uptime { parts.push(format!("Uptime: {}", info.uptime_formatted())); }
     parts.join("\n")
 }
+
+// ---------------------------------------------------------------------------
+// Command parsing
+// ---------------------------------------------------------------------------
 
 /// A parsed user input — either a slash command or a chat message.
 #[derive(Debug, PartialEq)]
@@ -160,6 +197,161 @@ pub fn parse_input(input: &str) -> Command {
     }
 }
 
+// ---------------------------------------------------------------------------
+// OllamaClient — LlmClient implementation
+// ---------------------------------------------------------------------------
+
+/// Ollama-backed LLM client with retry and timeout support.
+pub struct OllamaClient {
+    client: ollama_rs::Ollama,
+    timeout_secs: u64,
+}
+
+impl OllamaClient {
+    /// Creates a new client connected to the given Ollama endpoint.
+    pub fn new(host: &str, port: u16, timeout_secs: u64) -> Self {
+        Self {
+            client: ollama_rs::Ollama::new(host, port),
+            timeout_secs,
+        }
+    }
+
+    /// Converts our [`ChatRequest`] into an ollama-rs `ChatMessageRequest`.
+    fn to_ollama_request(
+        request: &ChatRequest,
+    ) -> ollama_rs::generation::chat::request::ChatMessageRequest {
+        let messages: Vec<ollama_rs::generation::chat::ChatMessage> = request
+            .messages
+            .iter()
+            .map(|m| match m.role {
+                ChatRole::System => {
+                    ollama_rs::generation::chat::ChatMessage::system(m.content.clone())
+                }
+                ChatRole::User => {
+                    ollama_rs::generation::chat::ChatMessage::user(m.content.clone())
+                }
+                ChatRole::Assistant => {
+                    ollama_rs::generation::chat::ChatMessage::assistant(m.content.clone())
+                }
+            })
+            .collect();
+
+        let mut req = ollama_rs::generation::chat::request::ChatMessageRequest::new(
+            request.model.clone(),
+            messages,
+        );
+        if request.options.temperature.is_some() || request.options.top_p.is_some() {
+            let mut opts = ollama_rs::models::ModelOptions::default();
+            if let Some(t) = request.options.temperature {
+                opts = opts.temperature(t);
+            }
+            if let Some(p) = request.options.top_p {
+                opts = opts.top_p(p);
+            }
+            req.options = Some(opts);
+        }
+        req
+    }
+
+    /// Streams tokens from a single attempt (no retry).
+    async fn stream_once(
+        &self,
+        ollama_request: &ollama_rs::generation::chat::request::ChatMessageRequest,
+        tx: &mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<(), AppError> {
+        let stream_future = self
+            .client
+            .send_chat_messages_stream(ollama_request.clone());
+        let mut stream = tokio::time::timeout(
+            Duration::from_secs(self.timeout_secs),
+            stream_future,
+        )
+        .await
+        .map_err(|_| AppError::Llm("request timed out".to_string()))?
+        .map_err(|e| AppError::Llm(e.to_string()))?;
+
+        while let Some(res) = stream.next().await {
+            match res {
+                Ok(resp) => {
+                    let token = resp.message.content;
+                    if !token.is_empty() && tx.send(AppEvent::Token(token)).is_err() {
+                        return Ok(());
+                    }
+                    if resp.done {
+                        let _ = tx.send(AppEvent::GenerationDone);
+                        return Ok(());
+                    }
+                }
+                Err(_) => {
+                    return Err(AppError::Llm("stream error".to_string()));
+                }
+            }
+        }
+        let _ = tx.send(AppEvent::GenerationDone);
+        Ok(())
+    }
+
+    /// Returns true if the error is a connection error worth retrying.
+    fn is_retryable(err: &AppError) -> bool {
+        match err {
+            AppError::Llm(msg) => {
+                msg.contains("connection")
+                    || msg.contains("Connection")
+                    || msg.contains("timed out")
+                    || msg.contains("timeout")
+                    || msg.contains("refused")
+            }
+            _ => false,
+        }
+    }
+}
+
+#[async_trait]
+impl LlmClient for OllamaClient {
+    async fn stream_chat(
+        &self,
+        request: ChatRequest,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<(), AppError> {
+        let ollama_request = Self::to_ollama_request(&request);
+        let mut last_err = None;
+
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                let backoff = Duration::from_secs(1 << attempt);
+                tracing::warn!(
+                    "retrying LLM request (attempt {}), backoff {:?}",
+                    attempt + 1,
+                    backoff
+                );
+                tokio::time::sleep(backoff).await;
+            }
+
+            match self.stream_once(&ollama_request, &tx).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if Self::is_retryable(&e) {
+                        tracing::warn!("retryable LLM error: {}", e);
+                        last_err = Some(e);
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| AppError::Llm("max retries exceeded".to_string())))
+    }
+
+    async fn pull_model(&self, model: &str) -> Result<(), AppError> {
+        self.client
+            .pull_model(model.to_string(), false)
+            .await
+            .map_err(|e| AppError::Llm(format!("failed to pull model: {}", e)))?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,13 +360,24 @@ mod tests {
 
     fn test_info() -> SystemInfo {
         SystemInfo {
-            cpu_percent: 34.0, temp_celsius: 58.0,
-            ram_used_bytes: 1_288_490_188, ram_total_bytes: 8_053_063_680,
-            battery_percent: 72.0, power_status: "Discharging".to_string(),
-            fan_rpm: 3200, uptime_secs: 9240,
-            networks: vec![NetworkInterface { name: "wlan0".to_string(), ip: "10.210.25.42".to_string() }],
-            cpu_real: true, temp_real: true, ram_real: true,
-            battery_real: true, fan_real: true, network_real: true,
+            cpu_percent: 34.0,
+            temp_celsius: 58.0,
+            ram_used_bytes: 1_288_490_188,
+            ram_total_bytes: 8_053_063_680,
+            battery_percent: 72.0,
+            power_status: "Discharging".to_string(),
+            fan_rpm: 3200,
+            uptime_secs: 9240,
+            networks: vec![NetworkInterface {
+                name: "wlan0".to_string(),
+                ip: "10.210.25.42".to_string(),
+            }],
+            cpu_real: true,
+            temp_real: true,
+            ram_real: true,
+            battery_real: true,
+            fan_real: true,
+            network_real: true,
         }
     }
 
@@ -185,15 +388,20 @@ mod tests {
     #[test]
     fn test_autonomous_request_has_system_and_user() {
         let req = build_autonomous_request(&test_info(), &[], "qwen2.5:3b", None, &default_vis());
-        // default system prompt + system context + user prompt = 3
         assert_eq!(req.messages.len(), 3);
-        assert_eq!(req.model_name, "qwen2.5:3b");
-        assert!(req.options.is_some());
+        assert_eq!(req.model, "qwen2.5:3b");
+        assert!(req.options.temperature.is_some());
     }
 
     #[test]
     fn test_autonomous_request_with_custom_prompt() {
-        let req = build_autonomous_request(&test_info(), &[], "qwen2.5:3b", Some("You are a ghost."), &default_vis());
+        let req = build_autonomous_request(
+            &test_info(),
+            &[],
+            "qwen2.5:3b",
+            Some("You are a ghost."),
+            &default_vis(),
+        );
         assert_eq!(req.messages.len(), 3);
         assert_eq!(req.messages[0].content, "You are a ghost.");
     }
@@ -204,15 +412,65 @@ mod tests {
             HistoryEntry::new(Role::User, "hello".to_string()),
             HistoryEntry::new(Role::Ai, "I feel warm.".to_string()),
         ];
-        let req = build_autonomous_request(&test_info(), &history, "qwen2.5:3b", None, &default_vis());
+        let req = build_autonomous_request(
+            &test_info(),
+            &history,
+            "qwen2.5:3b",
+            None,
+            &default_vis(),
+        );
         assert_eq!(req.messages.len(), 5);
     }
 
     #[test]
     fn test_response_request_includes_user_message() {
-        let req = build_response_request(&test_info(), &[], "How are you?", "qwen2.5:3b", None, &default_vis());
+        let req = build_response_request(
+            &test_info(),
+            &[],
+            "How are you?",
+            "qwen2.5:3b",
+            None,
+            &default_vis(),
+        );
         let last = req.messages.last().unwrap();
         assert_eq!(last.content, "How are you?");
+    }
+
+    #[test]
+    fn test_response_request_has_correct_roles() {
+        let req = build_response_request(
+            &test_info(),
+            &[],
+            "Hello",
+            "test-model",
+            None,
+            &default_vis(),
+        );
+        assert_eq!(req.messages[0].role, ChatRole::System);
+        assert_eq!(req.messages[1].role, ChatRole::System);
+        assert_eq!(req.messages[2].role, ChatRole::User);
+    }
+
+    #[test]
+    fn test_history_role_mapping() {
+        let history = vec![
+            HistoryEntry::new(Role::User, "hi".to_string()),
+            HistoryEntry::new(Role::Ai, "hello".to_string()),
+            HistoryEntry::new(Role::System, "[info]".to_string()),
+        ];
+        let req = build_response_request(
+            &test_info(),
+            &history,
+            "test",
+            "model",
+            None,
+            &default_vis(),
+        );
+        // system prompt + context + 3 history + user message = 6
+        assert_eq!(req.messages.len(), 6);
+        assert_eq!(req.messages[2].role, ChatRole::User);
+        assert_eq!(req.messages[3].role, ChatRole::Assistant);
+        assert_eq!(req.messages[4].role, ChatRole::System);
     }
 
     #[test]
@@ -237,7 +495,6 @@ mod tests {
     #[test]
     fn test_autonomous_prompts_are_varied() {
         assert!(AUTONOMOUS_PROMPTS.len() >= 5);
-        // Verify all prompts are unique
         let mut seen = std::collections::HashSet::new();
         for prompt in AUTONOMOUS_PROMPTS {
             assert!(seen.insert(prompt), "duplicate prompt: {}", prompt);
@@ -257,8 +514,14 @@ mod tests {
         assert_eq!(parse_input("/quit"), Command::Quit);
         assert_eq!(parse_input("/exit"), Command::Quit);
         assert_eq!(parse_input("/EXIT"), Command::Quit);
-        assert_eq!(parse_input("/model qwen2.5:7b"), Command::Model("qwen2.5:7b".to_string()));
-        assert_eq!(parse_input("hello world"), Command::Message("hello world".to_string()));
+        assert_eq!(
+            parse_input("/model qwen2.5:7b"),
+            Command::Model("qwen2.5:7b".to_string())
+        );
+        assert_eq!(
+            parse_input("hello world"),
+            Command::Message("hello world".to_string())
+        );
     }
 
     #[test]
@@ -275,11 +538,28 @@ mod tests {
         assert!(DEFAULT_SYSTEM_PROMPT.contains("battery"));
     }
 
-
-
     #[test]
     fn test_parse_whitespace_handling() {
         assert_eq!(parse_input("  /help  "), Command::Help);
-        assert_eq!(parse_input("  hello  "), Command::Message("hello".to_string()));
+        assert_eq!(
+            parse_input("  hello  "),
+            Command::Message("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_retryable() {
+        assert!(OllamaClient::is_retryable(&AppError::Llm(
+            "connection refused".to_string()
+        )));
+        assert!(OllamaClient::is_retryable(&AppError::Llm(
+            "request timed out".to_string()
+        )));
+        assert!(!OllamaClient::is_retryable(&AppError::Llm(
+            "model not found".to_string()
+        )));
+        assert!(!OllamaClient::is_retryable(&AppError::Config(
+            "bad".to_string()
+        )));
     }
 }

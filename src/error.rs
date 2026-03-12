@@ -1,8 +1,8 @@
 //! Application-wide error types.
 
 /// Errors that can occur in the TrappedMind application.
-#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
 pub enum AppError {
     /// Configuration loading or validation failure.
     #[error("config error: {0}")]

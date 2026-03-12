@@ -8,6 +8,7 @@ mod app;
 mod config;
 mod error;
 mod history;
+mod llm;
 mod ollama;
 mod pet_states;
 mod system;
@@ -15,15 +16,15 @@ mod ui;
 
 use app::{App, AppEvent, AppMode, HandleResult};
 use config::{AppConfig, CliArgs};
+use llm::LlmClient;
 use system::SystemReader;
 
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ollama_rs::Ollama;
 use ratatui::DefaultTerminal;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio_stream::StreamExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -101,10 +102,14 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let ollama = Ollama::new(&config.ollama_host, config.ollama_port);
+    let llm: Arc<dyn LlmClient> = Arc::new(ollama::OllamaClient::new(
+        &config.ollama_host,
+        config.ollama_port,
+        config.ollama_timeout_secs,
+    ));
 
     let mut terminal = ratatui::init();
-    let result = run_app(&mut terminal, &mut app, &mut rx, &tx, &ollama).await;
+    let result = run_app(&mut terminal, &mut app, &mut rx, &tx, &llm).await;
     ratatui::restore();
     result
 }
@@ -115,18 +120,18 @@ async fn run_app(
     app: &mut App,
     rx: &mut mpsc::UnboundedReceiver<AppEvent>,
     tx: &mpsc::UnboundedSender<AppEvent>,
-    ollama: &Ollama,
+    llm: &Arc<dyn LlmClient>,
 ) -> anyhow::Result<()> {
     terminal.draw(|frame| ui::draw(frame, app))?;
 
     loop {
         if app.should_auto_think() {
-            spawn_generation(ollama, app, tx, None);
+            spawn_generation(llm, app, tx, None);
         }
 
         match rx.recv().await {
             Some(AppEvent::Terminal(Event::Key(key))) if key.kind == KeyEventKind::Press => {
-                handle_key(app, key, ollama, tx);
+                handle_key(app, key, llm, tx);
                 if app.should_quit {
                     break;
                 }
@@ -161,7 +166,7 @@ async fn run_app(
 fn handle_key(
     app: &mut App,
     key: KeyEvent,
-    ollama: &Ollama,
+    llm: &Arc<dyn LlmClient>,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -180,13 +185,13 @@ fn handle_key(
             let result = app.submit_input();
             match result {
                 HandleResult::GenerateResponse(text) => {
-                    spawn_generation(ollama, app, tx, Some(text));
+                    spawn_generation(llm, app, tx, Some(text));
                 }
                 HandleResult::RunUpdate => {
                     spawn_update(tx.clone());
                 }
                 HandleResult::ForceThink => {
-                    spawn_generation(ollama, app, tx, None);
+                    spawn_generation(llm, app, tx, None);
                 }
                 _ => {}
             }
@@ -234,7 +239,6 @@ fn handle_key(
 /// Handles key presses while the config menu is open.
 fn handle_config_key(app: &mut App, key: KeyEvent) {
     if app.config_editing {
-        // Editing a field value
         match key.code {
             KeyCode::Enter => {
                 app.config_apply_edit();
@@ -252,7 +256,6 @@ fn handle_config_key(app: &mut App, key: KeyEvent) {
             _ => {}
         }
     } else {
-        // Navigating the menu
         match key.code {
             KeyCode::Up => app.config_up(),
             KeyCode::Down => app.config_down(),
@@ -263,45 +266,13 @@ fn handle_config_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Streams a chat request and sends tokens back through the event channel.
-/// Returns `Ok(())` on success, or the Ollama error if the request fails.
-async fn stream_chat(
-    ollama: &Ollama,
-    request: ollama_rs::generation::chat::request::ChatMessageRequest,
-    tx: &mpsc::UnboundedSender<AppEvent>,
-) -> Result<(), ollama_rs::error::OllamaError> {
-    let mut stream = ollama.send_chat_messages_stream(request).await?;
-    while let Some(res) = stream.next().await {
-        match res {
-            Ok(resp) => {
-                let token = resp.message.content;
-                if !token.is_empty()
-                    && tx.send(AppEvent::Token(token)).is_err()
-                {
-                    return Ok(());
-                }
-                if resp.done {
-                    let _ = tx.send(AppEvent::GenerationDone);
-                    return Ok(());
-                }
-            }
-            Err(_) => {
-                let _ = tx.send(AppEvent::GenerationError("Stream error".to_string()));
-                return Ok(());
-            }
-        }
-    }
-    let _ = tx.send(AppEvent::GenerationDone);
-    Ok(())
-}
-
-/// Starts an Ollama streaming chat generation in a background task.
+/// Starts an LLM streaming chat generation in a background task.
 ///
 /// If `user_message` is `Some`, builds a response request; otherwise builds an
-/// autonomous thought request. Uses the chat API with proper role-tagged
-/// messages so the model sees its own previous responses as assistant messages.
+/// autonomous thought request. The [`LlmClient`] implementation handles retry
+/// logic and timeouts internally.
 fn spawn_generation(
-    ollama: &Ollama,
+    llm: &Arc<dyn LlmClient>,
     app: &mut App,
     tx: &mpsc::UnboundedSender<AppEvent>,
     user_message: Option<String>,
@@ -317,8 +288,21 @@ fn spawn_generation(
     let stats_vis = app.config.stats.clone();
 
     let request = match &user_message {
-        Some(msg) => crate::ollama::build_response_request(&info, &history_entries, msg, &model, sys_prompt.as_deref(), &stats_vis),
-        None => crate::ollama::build_autonomous_request(&info, &history_entries, &model, sys_prompt.as_deref(), &stats_vis),
+        Some(msg) => crate::ollama::build_response_request(
+            &info,
+            &history_entries,
+            msg,
+            &model,
+            sys_prompt.as_deref(),
+            &stats_vis,
+        ),
+        None => crate::ollama::build_autonomous_request(
+            &info,
+            &history_entries,
+            &model,
+            sys_prompt.as_deref(),
+            &stats_vis,
+        ),
     };
 
     app.start_ai_message();
@@ -327,43 +311,50 @@ fn spawn_generation(
     let delay_min = app.config.think_delay_min_ms;
     let delay_max = app.config.think_delay_max_ms;
 
-    let ollama = ollama.clone();
+    let llm = Arc::clone(llm);
     let tx = tx.clone();
 
     tokio::spawn(async move {
         // Pause before streaming to simulate thinking
         if delay_max > 0 {
-            let range = delay_min..=delay_max;
             let ms = if delay_min >= delay_max {
                 delay_min
             } else {
-                rand::random_range(range)
+                rand::random_range(delay_min..=delay_max)
             };
             tokio::time::sleep(Duration::from_millis(ms)).await;
         }
 
-        if let Err(e) = stream_chat(&ollama, request.clone(), &tx).await {
-            let err_str = e.to_string();
-            // Auto-pull model if not found, then retry
-            if err_str.contains("not found") || err_str.contains("pull") {
-                let _ = tx.send(AppEvent::GenerationError(format!(
-                    "Model not found, pulling {}...", request.model_name
-                )));
-                match ollama.pull_model(request.model_name.clone(), false).await {
-                    Ok(_) => {
-                        let _ = tx.send(AppEvent::GenerationError(format!(
-                            "Model {} pulled successfully, retrying...", request.model_name
-                        )));
-                        if let Err(e) = stream_chat(&ollama, request, &tx).await {
-                            let _ = tx.send(AppEvent::GenerationError(format!("Ollama error: {}", e)));
+        match llm.stream_chat(request.clone(), tx.clone()).await {
+            Ok(()) => {}
+            Err(e) => {
+                let err_str = e.to_string();
+                // Auto-pull model if not found, then retry
+                if err_str.contains("not found") || err_str.contains("pull") {
+                    let _ = tx.send(AppEvent::GenerationError(format!(
+                        "Model not found, pulling {}...",
+                        request.model
+                    )));
+                    match llm.pull_model(&request.model).await {
+                        Ok(()) => {
+                            let _ = tx.send(AppEvent::GenerationError(format!(
+                                "Model {} pulled, retrying...",
+                                request.model
+                            )));
+                            if let Err(e) = llm.stream_chat(request, tx.clone()).await {
+                                let _ = tx.send(AppEvent::GenerationError(format!(
+                                    "LLM error: {}",
+                                    e
+                                )));
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::GenerationError(format!("{}", e)));
                         }
                     }
-                    Err(e) => {
-                        let _ = tx.send(AppEvent::GenerationError(format!("Failed to pull model: {}", e)));
-                    }
+                } else {
+                    let _ = tx.send(AppEvent::GenerationError(format!("LLM error: {}", e)));
                 }
-            } else {
-                let _ = tx.send(AppEvent::GenerationError(format!("Ollama error: {}", e)));
             }
         }
     });

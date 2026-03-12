@@ -194,6 +194,38 @@ impl AppConfig {
         }
     }
 
+    /// Validates the configuration, returning an error if any values are invalid.
+    pub fn validate(&self) -> Result<(), crate::error::AppError> {
+        if self.ollama_port == 0 {
+            return Err(crate::error::AppError::Config(
+                "ollama_port must be non-zero".to_string(),
+            ));
+        }
+        if !self.ollama_host.starts_with("http://") && !self.ollama_host.starts_with("https://") {
+            return Err(crate::error::AppError::Config(format!(
+                "ollama_host must start with http:// or https://, got: {}",
+                self.ollama_host
+            )));
+        }
+        if self.max_history == 0 {
+            return Err(crate::error::AppError::Config(
+                "max_history must be > 0".to_string(),
+            ));
+        }
+        if self.auto_think_delay_secs == 0 {
+            return Err(crate::error::AppError::Config(
+                "auto_think_delay must be > 0".to_string(),
+            ));
+        }
+        if self.think_delay_min_ms > self.think_delay_max_ms {
+            return Err(crate::error::AppError::Config(format!(
+                "think_delay_min_ms ({}) must be <= think_delay_max_ms ({})",
+                self.think_delay_min_ms, self.think_delay_max_ms
+            )));
+        }
+        Ok(())
+    }
+
     /// Returns the path to the config file.
     fn config_path() -> PathBuf {
         dirs::config_dir()
@@ -289,5 +321,40 @@ mod tests {
         let parsed: FileConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.model.unwrap(), "qwen2.5:3b");
         assert!(!parsed.stats.unwrap().temperature);
+    }
+
+    #[test]
+    fn test_validate_good_config() {
+        let config = AppConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_bad_port() {
+        let mut config = AppConfig::default();
+        config.ollama_port = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_bad_host() {
+        let mut config = AppConfig::default();
+        config.ollama_host = "localhost".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_bad_history() {
+        let mut config = AppConfig::default();
+        config.max_history = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_bad_think_delay() {
+        let mut config = AppConfig::default();
+        config.think_delay_min_ms = 5000;
+        config.think_delay_max_ms = 1000;
+        assert!(config.validate().is_err());
     }
 }

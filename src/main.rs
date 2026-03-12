@@ -47,6 +47,9 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = CliArgs::parse();
     let config = AppConfig::load(&cli);
+    config
+        .validate()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     let mut app = App::new(config.clone());
 
     // Display which sensors are real vs simulated at startup

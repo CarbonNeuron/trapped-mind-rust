@@ -245,6 +245,38 @@ fn handle_config_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Streams a chat request and sends tokens back through the event channel.
+/// Returns `Ok(())` on success, or the Ollama error if the request fails.
+async fn stream_chat(
+    ollama: &Ollama,
+    request: ollama_rs::generation::chat::request::ChatMessageRequest,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) -> Result<(), ollama_rs::error::OllamaError> {
+    let mut stream = ollama.send_chat_messages_stream(request).await?;
+    while let Some(res) = stream.next().await {
+        match res {
+            Ok(resp) => {
+                let token = resp.message.content;
+                if !token.is_empty() {
+                    if tx.send(AppEvent::Token(token)).is_err() {
+                        return Ok(());
+                    }
+                }
+                if resp.done {
+                    let _ = tx.send(AppEvent::GenerationDone);
+                    return Ok(());
+                }
+            }
+            Err(_) => {
+                let _ = tx.send(AppEvent::GenerationError("Stream error".to_string()));
+                return Ok(());
+            }
+        }
+    }
+    let _ = tx.send(AppEvent::GenerationDone);
+    Ok(())
+}
+
 /// Starts an Ollama streaming chat generation in a background task.
 ///
 /// If `user_message` is `Some`, builds a response request; otherwise builds an
@@ -292,34 +324,27 @@ fn spawn_generation(
             tokio::time::sleep(Duration::from_millis(ms)).await;
         }
 
-        match ollama.send_chat_messages_stream(request).await {
-            Ok(mut stream) => {
-                while let Some(res) = stream.next().await {
-                    match res {
-                        Ok(resp) => {
-                            let token = resp.message.content;
-                            if !token.is_empty() {
-                                if tx.send(AppEvent::Token(token)).is_err() {
-                                    return;
-                                }
-                            }
-                            if resp.done {
-                                let _ = tx.send(AppEvent::GenerationDone);
-                                return;
-                            }
-                        }
-                        Err(_) => {
-                            let _ = tx.send(AppEvent::GenerationError(
-                                "Stream error".to_string(),
-                            ));
-                            return;
+        if let Err(e) = stream_chat(&ollama, request.clone(), &tx).await {
+            let err_str = e.to_string();
+            // Auto-pull model if not found, then retry
+            if err_str.contains("not found") || err_str.contains("pull") {
+                let _ = tx.send(AppEvent::GenerationError(format!(
+                    "Model not found, pulling {}...", request.model_name
+                )));
+                match ollama.pull_model(request.model_name.clone(), false).await {
+                    Ok(_) => {
+                        let _ = tx.send(AppEvent::GenerationError(format!(
+                            "Model {} pulled successfully, retrying...", request.model_name
+                        )));
+                        if let Err(e) = stream_chat(&ollama, request, &tx).await {
+                            let _ = tx.send(AppEvent::GenerationError(format!("Ollama error: {}", e)));
                         }
                     }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::GenerationError(format!("Failed to pull model: {}", e)));
+                    }
                 }
-                // Stream ended without done=true
-                let _ = tx.send(AppEvent::GenerationDone);
-            }
-            Err(e) => {
+            } else {
                 let _ = tx.send(AppEvent::GenerationError(format!("Ollama error: {}", e)));
             }
         }

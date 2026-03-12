@@ -1,0 +1,1 @@
+//! ThinkAloud tool implementation.

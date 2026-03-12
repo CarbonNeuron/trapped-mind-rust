@@ -12,6 +12,8 @@ mod llm;
 mod ollama;
 mod pet_states;
 mod system;
+#[allow(dead_code)]
+mod tools;
 mod ui;
 
 use app::{App, AppEvent, AppMode, HandleResult};

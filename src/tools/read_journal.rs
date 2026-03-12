@@ -1,0 +1,1 @@
+//! ReadJournal tool implementation.

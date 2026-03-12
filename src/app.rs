@@ -191,6 +191,8 @@ pub struct App {
     pub tool_history: Vec<String>,
     /// Whether a tool cycle is currently in progress.
     pub tool_active: bool,
+    /// Monotonic turn counter for tool cycles.
+    pub tool_turn: u32,
     /// Last known inner dimensions of the canvas panel.
     pub canvas_width: u16,
     /// Last known inner height of the canvas panel.
@@ -260,6 +262,7 @@ impl App {
             canvas_task: None,
             tool_history: Vec::new(),
             tool_active: false,
+            tool_turn: 0,
             canvas_width: 0,
             canvas_height: 0,
             last_user_input_time: Instant::now(),

@@ -687,21 +687,24 @@ fn spawn_tool_cycle(
     };
 
     app.tool_active = true;
+    app.tool_turn += 1;
     app.last_user_input_time = std::time::Instant::now();
 
+    let turn = app.tool_turn;
     let llm = Arc::clone(llm);
     let tx = tx.clone();
     let registry = Arc::clone(registry);
 
     tokio::spawn(async move {
+        // Show turn indicator
+        let _ = tx.send(AppEvent::ToolStatus(format!("── Turn {} ──", turn)));
+
         // Phase 1: Decision — stream tokens to chat so the user sees the AI thinking
         let decision_request = decision::build_decision_prompt(&context, &registry);
         let decision_result = llm.stream_generate(decision_request).await;
 
         let raw_decision = match decision_result {
             Ok(mut stream) => {
-                // Show "Thinking:" prefix before streaming decision tokens
-                let _ = tx.send(AppEvent::ToolChatToken("Thinking: ".to_string()));
                 let mut text = String::new();
                 while let Some(result) = stream.recv().await {
                     match result {

@@ -264,10 +264,11 @@ fn spawn_generation(
     let info = app.system_info.clone();
     let model = app.model.clone();
     let sys_prompt = app.config.system_prompt.clone();
+    let stats_vis = app.config.stats.clone();
 
     let request = match &user_message {
-        Some(msg) => crate::ollama::build_response_request(&info, &history_entries, msg, &model, sys_prompt.as_deref()),
-        None => crate::ollama::build_autonomous_request(&info, &history_entries, &model, sys_prompt.as_deref()),
+        Some(msg) => crate::ollama::build_response_request(&info, &history_entries, msg, &model, sys_prompt.as_deref(), &stats_vis),
+        None => crate::ollama::build_autonomous_request(&info, &history_entries, &model, sys_prompt.as_deref(), &stats_vis),
     };
 
     app.start_ai_message();

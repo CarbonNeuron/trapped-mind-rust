@@ -30,6 +30,13 @@ pub enum ConfigField {
     MaxHistory,
     AutoThinkDelay,
     SystemPrompt,
+    ShowCpu,
+    ShowTemp,
+    ShowRam,
+    ShowBattery,
+    ShowFan,
+    ShowUptime,
+    ShowNetwork,
 }
 
 impl ConfigField {
@@ -41,6 +48,13 @@ impl ConfigField {
         ConfigField::MaxHistory,
         ConfigField::AutoThinkDelay,
         ConfigField::SystemPrompt,
+        ConfigField::ShowCpu,
+        ConfigField::ShowTemp,
+        ConfigField::ShowRam,
+        ConfigField::ShowBattery,
+        ConfigField::ShowFan,
+        ConfigField::ShowUptime,
+        ConfigField::ShowNetwork,
     ];
 
     /// Display label for this field.
@@ -52,7 +66,23 @@ impl ConfigField {
             ConfigField::MaxHistory => "Max History",
             ConfigField::AutoThinkDelay => "Auto-think Delay (s)",
             ConfigField::SystemPrompt => "System Prompt",
+            ConfigField::ShowCpu => "Show CPU",
+            ConfigField::ShowTemp => "Show Temperature",
+            ConfigField::ShowRam => "Show RAM",
+            ConfigField::ShowBattery => "Show Battery",
+            ConfigField::ShowFan => "Show Fan",
+            ConfigField::ShowUptime => "Show Uptime",
+            ConfigField::ShowNetwork => "Show Network",
         }
+    }
+
+    /// Returns `true` if this field is a boolean toggle (Enter flips it).
+    pub fn is_toggle(&self) -> bool {
+        matches!(self,
+            ConfigField::ShowCpu | ConfigField::ShowTemp | ConfigField::ShowRam |
+            ConfigField::ShowBattery | ConfigField::ShowFan | ConfigField::ShowUptime |
+            ConfigField::ShowNetwork
+        )
     }
 }
 
@@ -412,12 +442,25 @@ impl App {
             ConfigField::AutoThinkDelay => self.config.auto_think_delay_secs.to_string(),
             ConfigField::SystemPrompt => self.config.system_prompt.clone()
                 .unwrap_or_else(|| "(default)".to_string()),
+            ConfigField::ShowCpu => if self.config.stats.cpu { "ON" } else { "OFF" }.to_string(),
+            ConfigField::ShowTemp => if self.config.stats.temperature { "ON" } else { "OFF" }.to_string(),
+            ConfigField::ShowRam => if self.config.stats.ram { "ON" } else { "OFF" }.to_string(),
+            ConfigField::ShowBattery => if self.config.stats.battery { "ON" } else { "OFF" }.to_string(),
+            ConfigField::ShowFan => if self.config.stats.fan { "ON" } else { "OFF" }.to_string(),
+            ConfigField::ShowUptime => if self.config.stats.uptime { "ON" } else { "OFF" }.to_string(),
+            ConfigField::ShowNetwork => if self.config.stats.network { "ON" } else { "OFF" }.to_string(),
         }
     }
 
-    /// Starts editing the currently selected config field.
+    /// Starts editing the currently selected config field, or toggles it if boolean.
     pub fn config_start_edit(&mut self) {
         let field = ConfigField::ALL[self.config_selected];
+
+        if field.is_toggle() {
+            self.config_toggle(field);
+            return;
+        }
+
         self.config_edit_buffer = match field {
             ConfigField::SystemPrompt => {
                 self.config.system_prompt.clone().unwrap_or_default()
@@ -429,6 +472,20 @@ impl App {
             self.config_edit_buffer.clear();
         }
         self.config_editing = true;
+    }
+
+    /// Toggles a boolean config field.
+    fn config_toggle(&mut self, field: ConfigField) {
+        match field {
+            ConfigField::ShowCpu => self.config.stats.cpu = !self.config.stats.cpu,
+            ConfigField::ShowTemp => self.config.stats.temperature = !self.config.stats.temperature,
+            ConfigField::ShowRam => self.config.stats.ram = !self.config.stats.ram,
+            ConfigField::ShowBattery => self.config.stats.battery = !self.config.stats.battery,
+            ConfigField::ShowFan => self.config.stats.fan = !self.config.stats.fan,
+            ConfigField::ShowUptime => self.config.stats.uptime = !self.config.stats.uptime,
+            ConfigField::ShowNetwork => self.config.stats.network = !self.config.stats.network,
+            _ => {}
+        }
     }
 
     /// Applies the current edit buffer to the selected config field.
@@ -454,6 +511,7 @@ impl App {
             ConfigField::SystemPrompt => {
                 self.config.system_prompt = if val.is_empty() { None } else { Some(val) };
             }
+            _ => {} // Toggles are handled by config_toggle
         }
         self.config_editing = false;
         self.config_edit_buffer.clear();

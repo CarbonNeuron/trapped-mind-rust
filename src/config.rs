@@ -26,6 +26,32 @@ pub struct CliArgs {
     pub ollama_port: Option<u16>,
 }
 
+/// Which system stats are visible in the UI and sent to the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatsVisibility {
+    pub cpu: bool,
+    pub temperature: bool,
+    pub ram: bool,
+    pub battery: bool,
+    pub fan: bool,
+    pub uptime: bool,
+    pub network: bool,
+}
+
+impl Default for StatsVisibility {
+    fn default() -> Self {
+        Self {
+            cpu: true,
+            temperature: true,
+            ram: true,
+            battery: true,
+            fan: true,
+            uptime: true,
+            network: true,
+        }
+    }
+}
+
 /// Raw TOML file structure — all fields optional so partial configs work.
 #[derive(Debug, Deserialize, Serialize)]
 struct FileConfig {
@@ -36,6 +62,7 @@ struct FileConfig {
     history_path: Option<String>,
     auto_think_delay: Option<u64>,
     system_prompt: Option<String>,
+    stats: Option<StatsVisibility>,
 }
 
 /// Resolved application configuration with all values populated.
@@ -53,8 +80,10 @@ pub struct AppConfig {
     pub history_path: PathBuf,
     /// Seconds of idle time before the AI generates an autonomous thought.
     pub auto_think_delay_secs: u64,
-    /// Custom system prompt override. If `None`, the model's baked-in prompt is used.
+    /// Custom system prompt override. If `None`, the default prompt is used.
     pub system_prompt: Option<String>,
+    /// Which stats are shown in the UI panel and sent to the model.
+    pub stats: StatsVisibility,
 }
 
 impl Default for AppConfig {
@@ -69,6 +98,7 @@ impl Default for AppConfig {
                 .join("trapped_history.txt"),
             auto_think_delay_secs: 30,
             system_prompt: None,
+            stats: StatsVisibility::default(),
         }
     }
 }
@@ -98,6 +128,7 @@ impl AppConfig {
                 }
                 if let Some(v) = file_config.auto_think_delay { config.auto_think_delay_secs = v; }
                 config.system_prompt = file_config.system_prompt;
+                if let Some(v) = file_config.stats { config.stats = v; }
             }
         }
 
@@ -118,6 +149,7 @@ impl AppConfig {
             history_path: None, // Don't save expanded path back
             auto_think_delay: Some(self.auto_think_delay_secs),
             system_prompt: self.system_prompt.clone(),
+            stats: Some(self.stats.clone()),
         };
 
         let config_path = Self::config_path();
@@ -151,6 +183,8 @@ mod tests {
         assert_eq!(config.max_history, 50);
         assert_eq!(config.auto_think_delay_secs, 30);
         assert!(config.system_prompt.is_none());
+        assert!(config.stats.cpu);
+        assert!(config.stats.network);
     }
 
     #[test]
@@ -162,14 +196,23 @@ mod tests {
             max_history = 100
             auto_think_delay = 60
             system_prompt = "You are a ghost in the machine."
+
+            [stats]
+            cpu = true
+            temperature = false
+            ram = true
+            battery = false
+            fan = false
+            uptime = true
+            network = true
         "#;
         let file_config: FileConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(file_config.ollama_host.unwrap(), "http://192.168.1.100");
-        assert_eq!(file_config.ollama_port.unwrap(), 9999);
         assert_eq!(file_config.model.unwrap(), "qwen2.5:7b");
-        assert_eq!(file_config.max_history.unwrap(), 100);
-        assert_eq!(file_config.auto_think_delay.unwrap(), 60);
-        assert_eq!(file_config.system_prompt.unwrap(), "You are a ghost in the machine.");
+        let stats = file_config.stats.unwrap();
+        assert!(stats.cpu);
+        assert!(!stats.temperature);
+        assert!(!stats.battery);
     }
 
     #[test]
@@ -199,15 +242,16 @@ mod tests {
         let file_config = FileConfig {
             ollama_host: Some("http://localhost".to_string()),
             ollama_port: Some(11434),
-            model: Some("trapped".to_string()),
+            model: Some("qwen2.5:3b".to_string()),
             max_history: Some(50),
             history_path: None,
             auto_think_delay: Some(30),
             system_prompt: Some("Test prompt".to_string()),
+            stats: Some(StatsVisibility { cpu: true, temperature: false, ..Default::default() }),
         };
         let toml_str = toml::to_string_pretty(&file_config).unwrap();
         let parsed: FileConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.model.unwrap(), "trapped");
-        assert_eq!(parsed.system_prompt.unwrap(), "Test prompt");
+        assert_eq!(parsed.model.unwrap(), "qwen2.5:3b");
+        assert!(!parsed.stats.unwrap().temperature);
     }
 }

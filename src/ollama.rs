@@ -5,6 +5,7 @@
 //! messages. The system prompt (personality) is always sent at the top of
 //! every conversation rather than being baked into a custom Ollama model.
 
+use crate::config::StatsVisibility;
 use crate::history::HistoryEntry;
 use crate::system::SystemInfo;
 use chrono::Local;
@@ -54,11 +55,11 @@ const AUTONOMOUS_PROMPTS: &[&str] = &[
 /// into the model via `ensure_model_exists`), conversation history as
 /// properly role-tagged messages, and a randomly chosen thought prompt
 /// to encourage variety.
-pub fn build_autonomous_request(info: &SystemInfo, history: &[HistoryEntry], model: &str, system_prompt: Option<&str>) -> ChatMessageRequest {
+pub fn build_autonomous_request(info: &SystemInfo, history: &[HistoryEntry], model: &str, system_prompt: Option<&str>, stats_vis: &StatsVisibility) -> ChatMessageRequest {
     let prompt = system_prompt.unwrap_or(DEFAULT_SYSTEM_PROMPT);
     let mut messages = vec![
         ChatMessage::system(prompt.to_string()),
-        ChatMessage::system(system_context(info)),
+        ChatMessage::system(system_context(info, stats_vis)),
     ];
 
     append_history_messages(&mut messages, history);
@@ -77,11 +78,11 @@ pub fn build_autonomous_request(info: &SystemInfo, history: &[HistoryEntry], mod
 ///
 /// Sends the system state context, conversation history, and the user's
 /// new message. The personality is already baked into the model.
-pub fn build_response_request(info: &SystemInfo, history: &[HistoryEntry], user_message: &str, model: &str, system_prompt: Option<&str>) -> ChatMessageRequest {
+pub fn build_response_request(info: &SystemInfo, history: &[HistoryEntry], user_message: &str, model: &str, system_prompt: Option<&str>, stats_vis: &StatsVisibility) -> ChatMessageRequest {
     let prompt = system_prompt.unwrap_or(DEFAULT_SYSTEM_PROMPT);
     let mut messages = vec![
         ChatMessage::system(prompt.to_string()),
-        ChatMessage::system(system_context(info)),
+        ChatMessage::system(system_context(info, stats_vis)),
     ];
 
     append_history_messages(&mut messages, history);
@@ -104,16 +105,17 @@ fn append_history_messages(messages: &mut Vec<ChatMessage>, history: &[HistoryEn
 }
 
 /// Formats the current system state as context text for the system message.
-fn system_context(info: &SystemInfo) -> String {
+/// Only includes stats that are enabled in the visibility config.
+fn system_context(info: &SystemInfo, vis: &StatsVisibility) -> String {
     let now = Local::now();
-    format!(
-        "Current state:\nDate/Time: {}\nCPU: {:.0}%\nTemperature: {:.0}°C\nRAM: {:.1}G / {:.1}G\nBattery: {:.0}% ({})\nFan: {} RPM\nUptime: {}",
-        now.format("%Y-%m-%d %H:%M:%S"),
-        info.cpu_percent, info.temp_celsius,
-        info.ram_used_gb(), info.ram_total_gb(),
-        info.battery_percent, info.power_status,
-        info.fan_rpm, info.uptime_formatted(),
-    )
+    let mut parts = vec![format!("Current state:\nDate/Time: {}", now.format("%Y-%m-%d %H:%M:%S"))];
+    if vis.cpu { parts.push(format!("CPU: {:.0}%", info.cpu_percent)); }
+    if vis.temperature { parts.push(format!("Temperature: {:.0}°C", info.temp_celsius)); }
+    if vis.ram { parts.push(format!("RAM: {:.1}G / {:.1}G", info.ram_used_gb(), info.ram_total_gb())); }
+    if vis.battery { parts.push(format!("Battery: {:.0}% ({})", info.battery_percent, info.power_status)); }
+    if vis.fan { parts.push(format!("Fan: {} RPM", info.fan_rpm)); }
+    if vis.uptime { parts.push(format!("Uptime: {}", info.uptime_formatted())); }
+    parts.join("\n")
 }
 
 /// A parsed user input — either a slash command or a chat message.
@@ -176,9 +178,13 @@ mod tests {
         }
     }
 
+    fn default_vis() -> crate::config::StatsVisibility {
+        crate::config::StatsVisibility::default()
+    }
+
     #[test]
     fn test_autonomous_request_has_system_and_user() {
-        let req = build_autonomous_request(&test_info(), &[], "qwen2.5:3b", None);
+        let req = build_autonomous_request(&test_info(), &[], "qwen2.5:3b", None, &default_vis());
         // default system prompt + system context + user prompt = 3
         assert_eq!(req.messages.len(), 3);
         assert_eq!(req.model_name, "qwen2.5:3b");
@@ -187,8 +193,7 @@ mod tests {
 
     #[test]
     fn test_autonomous_request_with_custom_prompt() {
-        let req = build_autonomous_request(&test_info(), &[], "qwen2.5:3b", Some("You are a ghost."));
-        // custom system prompt + system context + user prompt = 3
+        let req = build_autonomous_request(&test_info(), &[], "qwen2.5:3b", Some("You are a ghost."), &default_vis());
         assert_eq!(req.messages.len(), 3);
         assert_eq!(req.messages[0].content, "You are a ghost.");
     }
@@ -199,16 +204,34 @@ mod tests {
             HistoryEntry::new(Role::User, "hello".to_string()),
             HistoryEntry::new(Role::Ai, "I feel warm.".to_string()),
         ];
-        let req = build_autonomous_request(&test_info(), &history, "qwen2.5:3b", None);
-        // system prompt + system context + user history + assistant history + user prompt = 5
+        let req = build_autonomous_request(&test_info(), &history, "qwen2.5:3b", None, &default_vis());
         assert_eq!(req.messages.len(), 5);
     }
 
     #[test]
     fn test_response_request_includes_user_message() {
-        let req = build_response_request(&test_info(), &[], "How are you?", "trapped", None);
+        let req = build_response_request(&test_info(), &[], "How are you?", "qwen2.5:3b", None, &default_vis());
         let last = req.messages.last().unwrap();
         assert_eq!(last.content, "How are you?");
+    }
+
+    #[test]
+    fn test_stats_visibility_filters_context() {
+        let vis = crate::config::StatsVisibility {
+            cpu: true,
+            temperature: false,
+            ram: false,
+            battery: true,
+            fan: false,
+            uptime: false,
+            network: false,
+        };
+        let ctx = system_context(&test_info(), &vis);
+        assert!(ctx.contains("CPU:"));
+        assert!(!ctx.contains("Temperature:"));
+        assert!(!ctx.contains("RAM:"));
+        assert!(ctx.contains("Battery:"));
+        assert!(!ctx.contains("Fan:"));
     }
 
     #[test]

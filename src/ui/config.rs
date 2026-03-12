@@ -69,7 +69,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let hint = if app.config_editing {
         " Type value, Enter to confirm, Esc to cancel "
     } else {
-        " ↑↓ Navigate  Enter Edit  Esc Close "
+        " ↑↓ Navigate  Enter Edit/Toggle  Esc Close "
     };
     let hint_block = Block::bordered()
         .style(Style::default().fg(Color::DarkGray));

@@ -5,7 +5,7 @@ use crate::history::Role;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 /// Renders the chat panel with all messages, auto-scrolling to the bottom
@@ -18,26 +18,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         match msg.role {
             Role::Ai => render_ai_message(&mut lines, msg, inner_width),
             Role::User => render_user_message(&mut lines, msg, inner_width),
-            Role::System => render_system_message(&mut lines, msg),
+            Role::System => render_system_message(&mut lines, msg, inner_width),
         }
     }
 
     let inner_height = area.height.saturating_sub(2);
+    let total_lines = lines.len() as u16;
 
-    // Count visual lines after word-wrapping (ceiling division)
-    let total_wrapped: u16 = lines
-        .iter()
-        .map(|line| {
-            let width = line.width();
-            if width == 0 || inner_width == 0 {
-                1u16
-            } else {
-                width.div_ceil(inner_width) as u16
-            }
-        })
-        .sum();
-
-    let auto_bottom = total_wrapped.saturating_sub(inner_height);
+    let auto_bottom = total_lines.saturating_sub(inner_height);
     let scroll = match app.manual_scroll {
         Some(offset) => offset.min(auto_bottom),
         None => auto_bottom,
@@ -46,11 +34,62 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered()
         .title(" trapped mind ")
         .style(Style::default().fg(Color::DarkGray));
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
+    let paragraph = Paragraph::new(lines).block(block).scroll((scroll, 0));
     frame.render_widget(paragraph, area);
+}
+
+/// Word-wraps text to fit within `max_width`, prepending `indent` to every line.
+/// Each resulting line is exactly styled and pushed into `lines`.
+fn wrap_indented(
+    lines: &mut Vec<Line>,
+    text: &str,
+    indent: &str,
+    max_width: usize,
+    style: Style,
+) {
+    let content_width = max_width.saturating_sub(indent.len());
+    if content_width == 0 {
+        lines.push(Line::from(Span::styled(indent.to_string(), style)));
+        return;
+    }
+
+    for logical_line in text.lines() {
+        if logical_line.is_empty() {
+            lines.push(Line::from(Span::styled(indent.to_string(), style)));
+            continue;
+        }
+
+        let words: Vec<&str> = logical_line.split_whitespace().collect();
+        if words.is_empty() {
+            lines.push(Line::from(Span::styled(indent.to_string(), style)));
+            continue;
+        }
+
+        let mut current_line = String::from(indent);
+        let mut line_content_len = 0usize;
+
+        for word in &words {
+            let word_len = word.len();
+            if line_content_len > 0 && line_content_len + 1 + word_len > content_width {
+                // Flush current line and start a new one
+                lines.push(Line::from(Span::styled(current_line, style)));
+                current_line = String::from(indent);
+                current_line.push_str(word);
+                line_content_len = word_len;
+            } else if line_content_len == 0 {
+                current_line.push_str(word);
+                line_content_len = word_len;
+            } else {
+                current_line.push(' ');
+                current_line.push_str(word);
+                line_content_len += 1 + word_len;
+            }
+        }
+
+        if line_content_len > 0 {
+            lines.push(Line::from(Span::styled(current_line, style)));
+        }
+    }
 }
 
 /// Renders an AI message with a left-aligned header and cyan text.
@@ -62,7 +101,7 @@ fn render_ai_message(
     let header_style = Style::default().fg(Color::DarkGray);
     let text_style = Style::default().fg(Color::Cyan);
 
-    // Header: ── AI · HH:MM:SS ────────
+    // Header: ── AI HH:MM:SS ────────
     let label = if msg.timestamp.is_empty() {
         " AI ".to_string()
     } else {
@@ -81,12 +120,7 @@ fn render_ai_message(
                 .add_modifier(Modifier::SLOW_BLINK),
         )));
     } else {
-        for line_text in msg.text.lines() {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", line_text),
-                text_style,
-            )));
-        }
+        wrap_indented(lines, &msg.text, "  ", inner_width, text_style);
     }
 
     lines.push(Line::from(""));
@@ -101,7 +135,7 @@ fn render_user_message(
     let header_style = Style::default().fg(Color::DarkGray);
     let text_style = Style::default().fg(Color::Yellow);
 
-    // Header: right-aligned ──────── YOU · HH:MM:SS ──
+    // Header: right-aligned ──────── YOU HH:MM:SS ──
     let label = if msg.timestamp.is_empty() {
         " YOU ".to_string()
     } else {
@@ -111,26 +145,19 @@ fn render_user_message(
     let header = format!("{}{}──", "─".repeat(rule_len), label);
     lines.push(Line::from(Span::styled(header, header_style)));
 
-    // Message body — right-indented with a few spaces
-    let indent = "          ";
-    for line_text in msg.text.lines() {
-        lines.push(Line::from(Span::styled(
-            format!("{}{}", indent, line_text),
-            text_style,
-        )));
-    }
+    // Message body — indented
+    wrap_indented(lines, &msg.text, "          ", inner_width, text_style);
 
     lines.push(Line::from(""));
 }
 
 /// Renders a system message as a compact dim line.
-fn render_system_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage) {
+fn render_system_message(
+    lines: &mut Vec<Line>,
+    msg: &crate::app::ChatMessage,
+    inner_width: usize,
+) {
     let style = Style::default().fg(Color::DarkGray);
-    for line_text in msg.text.lines() {
-        lines.push(Line::from(Span::styled(
-            format!("  {}", line_text),
-            style,
-        )));
-    }
+    wrap_indented(lines, &msg.text, "  ", inner_width, style);
     lines.push(Line::from(""));
 }

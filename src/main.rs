@@ -6,6 +6,8 @@
 
 mod app;
 mod config;
+#[allow(dead_code)]
+mod decision;
 mod error;
 mod history;
 mod llm;

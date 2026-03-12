@@ -161,36 +161,71 @@ pub async fn stream_to_chat(
 
 /// Consumes an LlmStream, accumulating tokens and sending canvas updates.
 /// Stops early once `target_lines` complete lines have been received.
+/// Lines exceeding `max_line_width` are force-wrapped with a newline.
 /// Returns the full concatenated text.
 pub async fn stream_to_canvas(
     mut stream: crate::llm::LlmStream,
     tx: &mpsc::UnboundedSender<ToolOutput>,
     target_lines: usize,
+    max_line_width: usize,
 ) -> Result<String, AppError> {
     let mut full_text = String::new();
     while let Some(result) = stream.recv().await {
         match result {
             Ok(token) => {
                 full_text.push_str(&token);
+
+                // Force-wrap any line that exceeds max width
+                if max_line_width > 0 {
+                    full_text = force_wrap(&full_text, max_line_width);
+                }
+
                 if tx.send(ToolOutput::CanvasContent(full_text.clone())).is_err() {
                     break;
                 }
+
                 // Stop once we have enough complete lines
-                if target_lines > 0 {
-                    let complete = if full_text.ends_with('\n') {
-                        full_text.lines().count()
-                    } else {
-                        full_text.lines().count().saturating_sub(1)
-                    };
-                    if complete >= target_lines {
-                        break;
-                    }
+                if target_lines > 0 && count_complete_lines(&full_text) >= target_lines {
+                    break;
                 }
             }
             Err(e) => return Err(e),
         }
     }
     Ok(full_text)
+}
+
+/// Counts complete lines (lines terminated by '\n').
+fn count_complete_lines(text: &str) -> usize {
+    if text.ends_with('\n') {
+        text.lines().count()
+    } else {
+        text.lines().count().saturating_sub(1)
+    }
+}
+
+/// Force-wraps any line exceeding `max_width` by inserting newlines.
+fn force_wrap(text: &str, max_width: usize) -> String {
+    let mut result = String::with_capacity(text.len() + 16);
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            result.push('\n');
+        }
+        if line.len() <= max_width {
+            result.push_str(line);
+        } else {
+            let mut pos = 0;
+            while pos < line.len() {
+                if pos > 0 {
+                    result.push('\n');
+                }
+                let end = (pos + max_width).min(line.len());
+                result.push_str(&line[pos..end]);
+                pos = end;
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -315,12 +350,10 @@ pub mod tests {
         for i in 1..=10 {
             lines.push_str(&format!("line {}\n", i));
         }
-        // Simulate token-by-token (one char at a time would be too slow, send line by line)
         let tokens: Vec<&str> = lines.split_inclusive('\n').collect();
         let stream = mock_stream(tokens);
         let (tx, _rx) = mpsc::unbounded_channel();
-        let result = stream_to_canvas(stream, &tx, 3).await.unwrap();
-        // Should have stopped after 3 complete lines
+        let result = stream_to_canvas(stream, &tx, 3, 0).await.unwrap();
         let line_count = result.lines().count();
         assert!(line_count >= 3, "expected at least 3 lines, got {}", line_count);
         assert!(line_count <= 4, "expected at most 4 lines (3 + partial), got {}", line_count);
@@ -330,17 +363,15 @@ pub mod tests {
     async fn test_stream_to_canvas_zero_target_no_cutoff() {
         let stream = mock_stream(vec!["line1\n", "line2\n", "line3\n"]);
         let (tx, _rx) = mpsc::unbounded_channel();
-        let result = stream_to_canvas(stream, &tx, 0).await.unwrap();
+        let result = stream_to_canvas(stream, &tx, 0, 0).await.unwrap();
         assert_eq!(result.lines().count(), 3);
     }
 
     #[tokio::test]
     async fn test_stream_to_canvas_partial_lines_not_counted() {
-        // "line1\npartial" — only 1 complete line, partial not counted
         let stream = mock_stream(vec!["line1\n", "partial"]);
         let (tx, _rx) = mpsc::unbounded_channel();
-        let result = stream_to_canvas(stream, &tx, 3).await.unwrap();
-        // Should NOT stop early — only 1 complete line, target is 3
+        let result = stream_to_canvas(stream, &tx, 3, 0).await.unwrap();
         assert_eq!(result, "line1\npartial");
     }
 
@@ -348,16 +379,64 @@ pub mod tests {
     async fn test_stream_to_canvas_sends_content_events() {
         let stream = mock_stream(vec!["a\n", "b\n"]);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let _result = stream_to_canvas(stream, &tx, 5).await.unwrap();
+        let _result = stream_to_canvas(stream, &tx, 5, 0).await.unwrap();
         let mut events = Vec::new();
         while let Ok(output) = rx.try_recv() {
             if let ToolOutput::CanvasContent(c) = output {
                 events.push(c);
             }
         }
-        // Each event should be the full accumulated buffer
         assert_eq!(events.len(), 2);
         assert_eq!(events[0], "a\n");
         assert_eq!(events[1], "a\nb\n");
+    }
+
+    #[tokio::test]
+    async fn test_stream_to_canvas_force_wraps_long_lines() {
+        // A single 25-char token with no newline, max width 10
+        let stream = mock_stream(vec!["abcdefghijklmnopqrstuvwxy"]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let result = stream_to_canvas(stream, &tx, 0, 10).await.unwrap();
+        // Should be force-wrapped into 3 lines: 10 + 10 + 5
+        assert_eq!(result, "abcdefghij\nklmnopqrst\nuvwxy");
+    }
+
+    #[tokio::test]
+    async fn test_stream_to_canvas_force_wrap_triggers_line_cutoff() {
+        // A long line that force-wraps into 3+ lines, target is 2
+        let stream = mock_stream(vec!["abcdefghijklmnopqrstuvwxyz0123456789"]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let result = stream_to_canvas(stream, &tx, 2, 10).await.unwrap();
+        // After wrapping: "abcdefghij\nklmnopqrst\nuvwxyz0123\n456789"
+        // 2 complete lines → should stop
+        let complete = count_complete_lines(&result);
+        assert!(complete >= 2, "expected >= 2 complete lines, got {}", complete);
+    }
+
+    #[test]
+    fn test_force_wrap_short_lines_unchanged() {
+        assert_eq!(force_wrap("hello\nworld\n", 10), "hello\nworld\n");
+    }
+
+    #[test]
+    fn test_force_wrap_long_line() {
+        assert_eq!(force_wrap("abcdefghijklmno", 5), "abcde\nfghij\nklmno");
+    }
+
+    #[test]
+    fn test_force_wrap_mixed() {
+        assert_eq!(
+            force_wrap("short\nabcdefghijklmno\nok", 5),
+            "short\nabcde\nfghij\nklmno\nok"
+        );
+    }
+
+    #[test]
+    fn test_count_complete_lines() {
+        assert_eq!(count_complete_lines("a\nb\n"), 2);
+        assert_eq!(count_complete_lines("a\nb"), 1);
+        assert_eq!(count_complete_lines("partial"), 0);
+        assert_eq!(count_complete_lines(""), 0);
+        assert_eq!(count_complete_lines("\n"), 1);
     }
 }

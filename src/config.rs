@@ -118,28 +118,35 @@ impl AppConfig {
 
         let config_path = Self::config_path();
 
-        if let Ok(contents) = std::fs::read_to_string(&config_path) {
-            if let Ok(file_config) = toml::from_str::<FileConfig>(&contents) {
-                if let Some(v) = file_config.ollama_host { config.ollama_host = v; }
-                if let Some(v) = file_config.ollama_port { config.ollama_port = v; }
-                if let Some(v) = file_config.model { config.model = v; }
-                if let Some(v) = file_config.max_history { config.max_history = v; }
-                if let Some(v) = file_config.history_path {
-                    let expanded = if let Some(stripped) = v.strip_prefix("~/") {
-                        dirs::home_dir()
-                            .unwrap_or_else(|| PathBuf::from("."))
-                            .join(stripped)
-                    } else {
-                        PathBuf::from(v)
-                    };
-                    config.history_path = expanded;
+        match std::fs::read_to_string(&config_path) {
+            Ok(contents) => match toml::from_str::<FileConfig>(&contents) {
+                Ok(file_config) => {
+                    if let Some(v) = file_config.ollama_host { config.ollama_host = v; }
+                    if let Some(v) = file_config.ollama_port { config.ollama_port = v; }
+                    if let Some(v) = file_config.model { config.model = v; }
+                    if let Some(v) = file_config.max_history { config.max_history = v; }
+                    if let Some(v) = file_config.history_path {
+                        let expanded = if let Some(stripped) = v.strip_prefix("~/") {
+                            dirs::home_dir()
+                                .unwrap_or_else(|| PathBuf::from("."))
+                                .join(stripped)
+                        } else {
+                            PathBuf::from(v)
+                        };
+                        config.history_path = expanded;
+                    }
+                    if let Some(v) = file_config.auto_think_delay { config.auto_think_delay_secs = v; }
+                    config.system_prompt = file_config.system_prompt;
+                    if let Some(v) = file_config.think_delay_min_ms { config.think_delay_min_ms = v; }
+                    if let Some(v) = file_config.think_delay_max_ms { config.think_delay_max_ms = v; }
+                    if let Some(v) = file_config.stats { config.stats = v; }
                 }
-                if let Some(v) = file_config.auto_think_delay { config.auto_think_delay_secs = v; }
-                config.system_prompt = file_config.system_prompt;
-                if let Some(v) = file_config.think_delay_min_ms { config.think_delay_min_ms = v; }
-                if let Some(v) = file_config.think_delay_max_ms { config.think_delay_max_ms = v; }
-                if let Some(v) = file_config.stats { config.stats = v; }
+                Err(e) => tracing::warn!("failed to parse config file: {}", e),
+            },
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!("failed to read config file: {}", e);
             }
+            Err(_) => {} // File not found is fine — use defaults
         }
 
         if let Some(ref v) = cli.model { config.model = v.clone(); }
@@ -166,10 +173,18 @@ impl AppConfig {
 
         let config_path = Self::config_path();
         if let Some(parent) = config_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!("failed to create config directory: {}", e);
+                return;
+            }
         }
-        if let Ok(toml_str) = toml::to_string_pretty(&file_config) {
-            let _ = std::fs::write(&config_path, toml_str);
+        match toml::to_string_pretty(&file_config) {
+            Ok(toml_str) => {
+                if let Err(e) = std::fs::write(&config_path, toml_str) {
+                    tracing::warn!("failed to write config file: {}", e);
+                }
+            }
+            Err(e) => tracing::warn!("failed to serialize config: {}", e),
         }
     }
 

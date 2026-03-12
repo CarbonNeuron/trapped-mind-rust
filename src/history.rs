@@ -92,21 +92,36 @@ impl HistoryManager {
     /// Clears all history from memory and deletes the backing file.
     pub fn clear(&mut self) {
         self.entries.clear();
-        let _ = fs::remove_file(&self.path);
+        if let Err(e) = fs::remove_file(&self.path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!("failed to remove history file: {}", e);
+            }
+        }
     }
 
     /// Writes all entries to the JSONL file, creating parent directories if needed.
     fn save(&self) {
         if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent);
+            if let Err(e) = fs::create_dir_all(parent) {
+                tracing::warn!("failed to create history directory: {}", e);
+                return;
+            }
         }
         let mut file = match fs::File::create(&self.path) {
             Ok(f) => f,
-            Err(_) => return,
+            Err(e) => {
+                tracing::warn!("failed to save history: {}", e);
+                return;
+            }
         };
         for entry in &self.entries {
-            if let Ok(json) = serde_json::to_string(entry) {
-                let _ = writeln!(file, "{}", json);
+            match serde_json::to_string(entry) {
+                Ok(json) => {
+                    if let Err(e) = writeln!(file, "{}", json) {
+                        tracing::warn!("failed to write history entry: {}", e);
+                    }
+                }
+                Err(e) => tracing::warn!("failed to serialize history entry: {}", e),
             }
         }
     }

@@ -240,13 +240,6 @@ async fn run_app(
             Some(AppEvent::ToolStatus(msg)) => {
                 app.add_system_message(msg);
             }
-            Some(AppEvent::ToolDecisionDone) => {
-                // Decision phase finished — close the "Thinking:" message
-                // but keep tool_active so the tool execution phase can proceed.
-                if app.is_generating {
-                    app.finish_ai_message();
-                }
-            }
             Some(AppEvent::ToolCycleDone(summary)) => {
                 if app.is_generating {
                     app.finish_ai_message();
@@ -719,8 +712,8 @@ fn spawn_tool_cycle(
                         }
                     }
                 }
-                // Finish the decision message before tool output starts
-                let _ = tx.send(AppEvent::ToolDecisionDone);
+                // Add separator — tool output continues in the same message
+                let _ = tx.send(AppEvent::ToolChatToken("\n\n".to_string()));
                 text
             }
             Err(e) => {

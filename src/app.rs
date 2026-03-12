@@ -118,8 +118,6 @@ pub enum AppEvent {
     ToolCanvasContent(String),
     /// A tool produced a status message.
     ToolStatus(String),
-    /// The decision phase of a tool cycle completed (finishes the "Thinking:" message).
-    ToolDecisionDone,
     /// The current tool cycle completed with a summary.
     ToolCycleDone(String),
     /// The current tool cycle failed.

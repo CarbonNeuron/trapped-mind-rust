@@ -196,6 +196,10 @@ async fn run_app(
                     if complete_line_count >= target_h {
                         app.canvas_buffer.clear();
                         app.canvas_generating = false;
+                        // Abort the background task to free the Ollama connection
+                        if let Some(handle) = app.canvas_task.take() {
+                            handle.abort();
+                        }
                     }
                 }
             }
@@ -205,6 +209,7 @@ async fn run_app(
                     app.canvas_lines = fit_canvas(raw, app.canvas_width, app.canvas_height);
                     app.canvas_buffer.clear();
                     app.canvas_generating = false;
+                    app.canvas_task.take();
                 }
             }
             Some(AppEvent::Shutdown) => {
@@ -470,6 +475,11 @@ fn spawn_canvas_generation(
         &stats_vis,
     );
 
+    // Abort any previous canvas task that's still running
+    if let Some(handle) = app.canvas_task.take() {
+        handle.abort();
+    }
+
     app.canvas_generating = true;
     app.canvas_buffer.clear();
     app.canvas_lines.clear();
@@ -477,7 +487,7 @@ fn spawn_canvas_generation(
     let llm = Arc::clone(llm);
     let tx = tx.clone();
 
-    tokio::spawn(async move {
+    app.canvas_task = Some(tokio::spawn(async move {
         // Use a wrapper that sends CanvasToken/CanvasDone instead of Token/GenerationDone
         let (inner_tx, mut inner_rx) = mpsc::unbounded_channel::<AppEvent>();
 
@@ -510,7 +520,7 @@ fn spawn_canvas_generation(
         }
 
         let _ = stream_handle.await;
-    });
+    }));
 }
 
 /// Normalizes canvas output to exact panel dimensions.

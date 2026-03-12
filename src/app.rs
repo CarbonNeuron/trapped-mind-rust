@@ -173,6 +173,8 @@ pub struct App {
     pub canvas_buffer: String,
     /// Whether a canvas generation is currently in progress.
     pub canvas_generating: bool,
+    /// Handle to the running canvas task, so it can be aborted early.
+    pub canvas_task: Option<tokio::task::JoinHandle<()>>,
     /// Last known inner dimensions of the canvas panel.
     pub canvas_width: u16,
     /// Last known inner height of the canvas panel.
@@ -239,6 +241,7 @@ impl App {
             canvas_lines: Vec::new(),
             canvas_buffer: String::new(),
             canvas_generating: false,
+            canvas_task: None,
             canvas_width: 0,
             canvas_height: 0,
             last_user_input_time: Instant::now(),

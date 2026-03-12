@@ -62,7 +62,7 @@ impl Default for AppConfig {
         Self {
             ollama_host: "http://localhost".to_string(),
             ollama_port: 11434,
-            model: "trapped".to_string(),
+            model: "qwen2.5:3b".to_string(),
             max_history: 50,
             history_path: dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
@@ -147,7 +147,7 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.ollama_host, "http://localhost");
         assert_eq!(config.ollama_port, 11434);
-        assert_eq!(config.model, "trapped");
+        assert_eq!(config.model, "qwen2.5:3b");
         assert_eq!(config.max_history, 50);
         assert_eq!(config.auto_think_delay_secs, 30);
         assert!(config.system_prompt.is_none());
@@ -189,7 +189,7 @@ mod tests {
     fn test_partial_cli_keeps_defaults() {
         let cli = CliArgs { model: None, ollama_host: None, ollama_port: None };
         let config = AppConfig::load(&cli);
-        assert_eq!(config.model, "trapped");
+        assert_eq!(config.model, "qwen2.5:3b");
         assert_eq!(config.ollama_host, "http://localhost");
         assert_eq!(config.ollama_port, 11434);
     }

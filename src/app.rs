@@ -82,8 +82,6 @@ pub enum HandleResult {
     GenerateResponse(String),
     /// Run the self-update script (`git pull && cargo build`).
     RunUpdate,
-    /// Ensure the named model exists in Ollama (creating it if needed).
-    EnsureModel(String),
     /// Trigger an autonomous thought immediately.
     ForceThink,
 }
@@ -294,12 +292,12 @@ impl App {
             Command::Model(name) => {
                 if name.is_empty() {
                     self.add_system_message(format!("Current model: {}", self.model));
-                    HandleResult::Nothing
                 } else {
                     self.model = name.clone();
-                    self.add_system_message(format!("Switching to model: {}", name));
-                    HandleResult::EnsureModel(name)
+                    self.config.model = name.clone();
+                    self.add_system_message(format!("Switched to model: {}", name));
                 }
+                HandleResult::Nothing
             }
             Command::Think => {
                 HandleResult::ForceThink

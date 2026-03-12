@@ -63,7 +63,7 @@ Config file at `~/.config/trapped-mind/config.toml`:
 ```toml
 ollama_host = "http://localhost"
 ollama_port = 11434
-model = "trapped"
+model = "qwen2.5:3b"
 max_history = 50
 history_path = "~/trapped_history.txt"
 auto_think_delay = 30

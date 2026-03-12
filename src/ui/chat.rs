@@ -39,10 +39,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(""));
     }
 
-    // Auto-scroll to bottom unless user has manually scrolled
-    let inner_height = area.height.saturating_sub(2) as usize;
-    let total_lines = lines.len();
-    let auto_bottom = if total_lines > inner_height { (total_lines - inner_height) as u16 } else { 0 };
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as u16;
+
+    // Count visual lines after word-wrapping (ceiling division)
+    let total_wrapped: u16 = lines.iter().map(|line| {
+        let width = line.width();
+        if width == 0 || inner_width == 0 {
+            1u16
+        } else {
+            ((width + inner_width - 1) / inner_width) as u16
+        }
+    }).sum();
+
+    let auto_bottom = total_wrapped.saturating_sub(inner_height);
     let scroll = match app.manual_scroll {
         Some(offset) => offset.min(auto_bottom),
         None => auto_bottom,
